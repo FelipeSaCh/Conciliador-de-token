@@ -1,0 +1,52 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache y compilados
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Archivos de datos y Excel (para evitar subir información sensible)
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+~$*.xlsx
+~$*.xls
+~$*.xlsm
+
+# Configuraciones de editores/IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Archivos del sistema
+Thumbs.db
+desktop.ini
+.DS_Store
