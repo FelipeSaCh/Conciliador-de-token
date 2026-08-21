@@ -3,7 +3,8 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-
+import sv_ttk
+import os
 import pandas as pd
 
 from config import (
@@ -23,10 +24,11 @@ from preview_widget import VistaPreviaExcel
 class ConciliadorApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        sv_ttk.set_theme("light")
         self.title(f"{APP_NAME} - v{APP_VERSION}")
         self.geometry("800x680")
         self.minsize(760, 460)
-
+        self.set_app_icon()
         self.file_path = tk.StringVar()
         self.sheet_vars = {clave: tk.StringVar(value=nombre) for clave, nombre in DEFAULT_SHEET_NAMES.items()}
         self.hojas_disponibles = []
@@ -36,6 +38,18 @@ class ConciliadorApp(tk.Tk):
         self._setup_styles()
         self._build_ui()
         self.after(150, self._procesar_cola)
+    def set_app_icon(self):
+        icon_path = Path(__file__).resolve().parent
+        icon_path = icon_path / "assets" / "icon.ico"
+
+        if icon_path.exists():
+            try:
+                self.iconbitmap(icon_path)
+            except Exception as e:
+                logger.error(f"Error al establecer el icono de la aplicación: {e}")
+        else:
+                logger.info("Icono de la aplicación establecido correctamente.")
+
 
     # ------------------------------------------------------------------ STYLES & UI SETUP
     def _setup_styles(self):
@@ -359,7 +373,7 @@ class ConciliadorApp(tk.Tk):
         except queue.Empty:
             pass
         finally:
-            self.after(150, self._procesar_cola)
+            self.after(300, self._procesar_cola)
 
     def _finalizar_ejecucion(self):
         self._procesando = False
