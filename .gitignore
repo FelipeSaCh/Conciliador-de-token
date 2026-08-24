@@ -50,3 +50,9 @@ MANIFEST
 Thumbs.db
 desktop.ini
 .DS_Store
+
+
+#Build
+build/
+dist/
+*.spec

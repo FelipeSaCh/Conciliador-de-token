@@ -13,8 +13,6 @@ from config import (
     OUTPUT_SHEETS_TO_HIDE,
     ORDEN,
     RED_FILL_COLOR,
-    SERIALES_BASE,
-    SERIALES_IVA,
 )
 from errors import ColumnaFaltanteError, ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
 
@@ -24,10 +22,15 @@ class ConciliadorExcel:
     COLUMNAS_REQUERIDAS_CONTA = ['NIT']
     COLUMNAS_REQUERIDAS_TERCEROS = ['NIT']
 
-    def __init__(self, file_path, sheet_names, progress_callback=None):
+    def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None, progress_callback=None):
         self.file_path = Path(file_path)
         self.sheet_names = sheet_names
         self.progress_callback = progress_callback or (lambda mensaje: None)
+        
+        # Guardamos los seriales dinámicos provenientes de la interfaz. 
+        # Si no envían nada, usamos listas vacías por precaución.
+        self.seriales_iva = seriales_iva if seriales_iva is not None else []
+        self.seriales_base = seriales_base if seriales_base is not None else []
 
     def _reportar(self, mensaje):
         logger.info(mensaje)
@@ -121,7 +124,8 @@ class ConciliadorExcel:
         df_auditoria = df[~es_personales][ORDEN].copy()
 
         self._reportar("Procesando hoja de auditoría de comprobantes...")
-        df_res_auditoria = self._procesar_aud_comp(df_aud_comp)
+            # Pasamos los seriales guardados en la instancia de la clase
+        df_res_auditoria = self._procesar_aud_comp(df_aud_comp, self.seriales_iva, self.seriales_base)
 
         self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
         df_dian_vs_cont, parejas_incompletas = self._unificar_dian_vs_cont(
@@ -218,14 +222,15 @@ class ConciliadorExcel:
         return df, es_personales
 
     @staticmethod
-    def _procesar_aud_comp(df_aud_comp):
+    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base):
+        # Ahora usamos los parámetros 'seriales_iva' y 'seriales_base' en lugar de los globales
         cols_iva = [
             col for col in df_aud_comp.columns
-            if any(re.search(rf'\b{s}', str(col)) for s in SERIALES_IVA)
+            if any(re.search(rf'\b{s}', str(col)) for s in seriales_iva)
         ]
         cols_base = [
             col for col in df_aud_comp.columns
-            if any(re.search(rf'\b{s}', str(col)) for s in SERIALES_BASE)
+            if any(re.search(rf'\b{s}', str(col)) for s in seriales_base)
         ]
 
         df_res_auditoria = pd.DataFrame()

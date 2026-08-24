@@ -1,7 +1,8 @@
 from pathlib import Path
+from version import __version__
 
 APP_NAME = "Conciliador DIAN vs Contabilidad"
-APP_VERSION = "2.0.0"
+APP_VERSION = __version__
 
 BASE_DIR = Path.home() / "ConciliadorDIAN"
 LOG_DIR = BASE_DIR / "logs"

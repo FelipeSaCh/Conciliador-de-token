@@ -9,12 +9,19 @@ La arquitectura del proyecto está organizada de la siguiente manera:
 ```text
 Conciliador de token/
 │
+├── assets/               # Recursos gráficos (icono de la aplicación)
 ├── venv/                 # Entorno virtual de Python (excluido en git)
 ├── .gitignore            # Archivos y carpetas excluidos del control de versiones
+├── app.py                # Interfaz gráfica de usuario (GUI) en Tkinter
+├── config.py             # Configuración general y constantes de la aplicación
+├── errors.py             # Excepciones personalizadas y sistema de logs
+├── excel_engine.py       # Motor lógico de conciliación de datos de Excel
+├── main.py               # Script de entrada para lanzar la aplicación
+├── preview_widget.py     # Componente visual para la vista previa de hojas Excel
+├── version.py            # Centralización de la versión del programa
 ├── CHANGELOG.md          # Historial detallado de cambios y versiones
 ├── README.md             # Documentación general del proyecto (este archivo)
-├── requirements.txt      # Dependencias del proyecto para su ejecución
-└── main.py               # Script principal con la lógica de procesamiento
+└── requirements.txt      # Dependencias del proyecto para su ejecución
 ```
 
 ---
@@ -52,49 +59,59 @@ Antes de ejecutar el proyecto, asegúrate de tener instalado:
    pip install -r requirements.txt
    ```
 
-4. **Configurar la ruta del archivo de Excel:**
-   Abre el archivo [main.py](file:///c:/Users/USUARIO/Desktop/Proyectos/Conciliador%20de%20token/main.py) y edita la línea 10 para apuntar a la ruta del archivo de Excel local que deseas procesar:
-   ```python
-   file_path = r"C:\Ruta\A\Tu\Archivo\De\Excel.xlsx"
+4. **Ejecutar la aplicación:**
+   ```bash
+   python main.py
    ```
+   *Nota: No es necesario configurar rutas en el código. Toda la configuración del archivo, hojas y filtros se realiza directamente a través de la interfaz gráfica.*
+
+---
+
+## Guía de Uso de la Interfaz Gráfica
+
+La aplicación cuenta con una interfaz organizada en pestañas para facilitar el proceso de conciliación:
+
+### 1. Cargar Archivo
+* Haz clic en **Examinar...** en la parte superior derecha y selecciona tu archivo de Excel (`.xlsx` o `.xlsm`).
+* Una vez cargado, se leerán automáticamente las pestañas del archivo.
+
+### 2. Configuración
+* **Asignación de Estructura de Hojas**: Asocia las hojas requeridas del proceso con la pestaña correspondiente del archivo importado mediante los menús desplegables.
+* **Configuración de Seriales**: Selecciona (usando los checkboxes) los seriales de IVA y BASE contables que deseas incluir en la conciliación. Puedes usar los botones **Todos** o **Ninguno** para agilizar la selección.
+
+### 3. Vista Previa
+* Puedes previsualizar el contenido de cualquiera de las hojas cargadas en el archivo de Excel usando la pestaña **Vista Previa** antes de ejecutar el proceso.
+
+### 4. Ejecución y Logs
+* Ve a la pestaña **Ejecución y Logs** y haz clic en **Iniciar Conciliación**.
+* La consola integrada mostrará en tiempo real los mensajes de diagnóstico y el avance del proceso.
+* Podrás verificar el estado a través de la barra de progreso e indicador visual de estado.
+* Si deseas revisar el historial completo de mensajes, puedes hacer clic en **Abrir Carpeta de Logs**.
 
 ---
 
 ## Funcionamiento del Proceso
 
-El script realiza la carga, limpieza, cruce y formato del archivo de Excel definido en `file_path`. 
+El script realiza la carga, limpieza, cruce y formato del archivo de Excel importado.
 
 ### Hojas de Entrada Esperadas
-El libro de Excel de entrada debe contener las siguientes hojas de cálculo:
+El libro de Excel de entrada debe contener las siguientes hojas (cuyos nombres se pueden mapear de forma interactiva en la pestaña de configuración):
 
-1. **`Sheet1`**: Información fiscal de facturas recibidas. Requiere columnas como `NIT Emisor`, `NIT Receptor`, `Prefijo`, `Folio`, `Total`, `IVA`.
+1. **`Token`** (Principal): Información fiscal de facturas recibidas de la DIAN. Requiere columnas como `NIT Emisor`, `NIT Receptor`, `Prefijo`, `Folio`, `Total`, `IVA`.
 2. **`contabilidad`**: Registros contables internos. Requiere columnas como `NIT`, `TIPO-DETALLE`, `TIPO`.
 3. **`TERCEROS`**: Maestro de terceros creados en el sistema. Requiere columna `NIT`.
 4. **`AUD-COMP`**: Auxiliar contable para comprobación de auditoría (contiene cuentas de IVA y base de compras).
-5. **`AUTORRETENEDORES`**: Lista de NITs catalogados como autorretenedores, con columnas `NIT` y `COMENTARIO` (o variantes similares).
+5. **`AUTORRETENEDORES`** (Opcional): Lista de NITs catalogados como autorretenedores, con columnas `NIT` y `COMENTARIO` (o variantes similares).
 
 ### Hojas de Salida Generadas
-El script escribe y modifica directamente el archivo de Excel original, agregando/reemplazando las siguientes hojas:
+El motor escribe y modifica directamente el archivo de Excel original, agregando/reemplazando las siguientes hojas:
 
-* **`DIAN VS CONT` (Visible)**: Reporte principal de conciliación. Contiene una tabla con estilo estructurado y autoajuste de columnas donde se comparan los documentos de la DIAN con los registros contables. Las filas sin correspondencia (pareja) se resaltan en color **rojo suave**.
-* **`Sheet1` (Modificada)**: Se añaden las columnas `CONCEPTO` y `TERCERO` a cada registro. Los gastos catalogados con tipo `PERSONALES` se resaltan en **rojo suave**.
+* **`DIAN VS CONT` (Visible)**: Reporte principal de conciliación. Contiene una tabla con estilo estructurado y autoajuste de columnas donde se comparan los documentos de la DIAN con los registros contables. Las filas sin correspondencia se resaltan en color **rojo suave**.
+* **Hoja Principal (Modificada)**: Se añaden las columnas `CONCEPTO` y `TERCERO` a cada registro. Los gastos catalogados con tipo `PERSONALES` se resaltan en **rojo suave**.
 * **Hojas Intermedias (Ocultas automáticamente)**:
   * `Resultados`: Hoja de procesamiento intermedio para cruces.
   * `auditoria`: Registros filtrados excluyendo los de tipo personal.
   * `resultados-auditoria`: Sumatoria de base e IVA por cada número externo (`Num.Ext`).
-
----
-
-## Ejecución
-
-Una vez configurada la ruta en `main.py` y con el entorno virtual activo, ejecuta el script principal:
-
-```bash
-python main.py
-```
-
-Al finalizar, se mostrará el mensaje en consola:
-`Proceso completado con éxito.`
 
 ---
 
