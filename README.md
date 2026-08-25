@@ -76,8 +76,8 @@ La aplicación cuenta con una interfaz organizada en pestañas para facilitar el
 * Una vez cargado, se leerán automáticamente las pestañas del archivo.
 
 ### 2. Configuración
-* **Asignación de Estructura de Hojas**: Asocia las hojas requeridas del proceso con la pestaña correspondiente del archivo importado mediante los menús desplegables.
-* **Configuración de Seriales**: Selecciona (usando los checkboxes) los seriales de IVA y BASE contables que deseas incluir en la conciliación. Puedes usar los botones **Todos** o **Ninguno** para agilizar la selección.
+* **Asignación de Estructura de Hojas**: Asocia las hojas requeridas del proceso con la pestaña correspondiente del archivo importado mediante los menús desplegables. Las pestañas opcionales se pueden vaciar usando el botón **✖**.
+* **Configuración de Columnas de AUD-COMP**: Asocia las columnas numéricas de la hoja `AUD-COMP` con las categorías **IVA**, **BASE** y **BASE 2** utilizando los interruptores (chips) de color. Existe exclusión mutua automática entre las columnas marcadas como IVA y BASE. Permite asignación masiva de "Todo" o "Ninguno" por categoría.
 
 ### 3. Vista Previa
 * Puedes previsualizar el contenido de cualquiera de las hojas cargadas en el archivo de Excel usando la pestaña **Vista Previa** antes de ejecutar el proceso.
@@ -97,21 +97,21 @@ El script realiza la carga, limpieza, cruce y formato del archivo de Excel impor
 ### Hojas de Entrada Esperadas
 El libro de Excel de entrada debe contener las siguientes hojas (cuyos nombres se pueden mapear de forma interactiva en la pestaña de configuración):
 
-1. **`Token`** (Principal): Información fiscal de facturas recibidas de la DIAN. Requiere columnas como `NIT Emisor`, `NIT Receptor`, `Prefijo`, `Folio`, `Total`, `IVA`.
-2. **`contabilidad`**: Registros contables internos. Requiere columnas como `NIT`, `TIPO-DETALLE`, `TIPO`.
-3. **`TERCEROS`**: Maestro de terceros creados en el sistema. Requiere columna `NIT`.
+1. **`Token`** (Principal): Información fiscal de facturas recibidas de la DIAN. Requiere columnas como `NIT Emisor`, `NIT Receptor`, `Prefijo`, `Folio`, `Total`, `IVA`. Se omiten automáticamente los registros cuyo tipo de documento contenga "application response" o su grupo contenga "emitido".
+2. **`contabilidad`** (Opcional): Registros contables internos. Requiere columnas como `NIT`, `TIPO-DETALLE`, `TIPO`. Si no se especifica, se asume vacía y se continúa la conciliación con los demás datos.
+3. **`TERCEROS`** (Opcional): Maestro de terceros creados en el sistema. Requiere columna `NIT`. Si no se especifica, se asume vacía.
 4. **`AUD-COMP`**: Auxiliar contable para comprobación de auditoría (contiene cuentas de IVA y base de compras).
 5. **`AUTORRETENEDORES`** (Opcional): Lista de NITs catalogados como autorretenedores, con columnas `NIT` y `COMENTARIO` (o variantes similares).
 
 ### Hojas de Salida Generadas
-El motor escribe y modifica directamente el archivo de Excel original, agregando/reemplazando las siguientes hojas:
+El motor escribe y modifica directamente el archivo de Excel original, agregando/reemplazando las siguientes hojas y datos:
 
-* **`DIAN VS CONT` (Visible)**: Reporte principal de conciliación. Contiene una tabla con estilo estructurado y autoajuste de columnas donde se comparan los documentos de la DIAN con los registros contables. Las filas sin correspondencia se resaltan en color **rojo suave**.
+* **`DIAN VS CONT` (Visible)**: Reporte principal de conciliación. Contiene una tabla con estilo estructurado y autoajuste de columnas donde se comparan los documentos de la DIAN con los registros contables. Las filas sin correspondencia se resaltan en color **rojo suave**. Concilia las columnas de `BASE`, `BASE_2` e `IVA`.
+* **Hoja `AUD-COMP` (Modificada con Inyección)**: Se insertan dos nuevas columnas llamadas `BASE` e `IVA` directamente en la pestaña original de `AUD-COMP`, inmediatamente a la derecha de la columna `Tercero`. Los valores se calculan automáticamente y se les aplica formato de moneda preservando el formato original del documento.
 * **Hoja Principal (Modificada)**: Se añaden las columnas `CONCEPTO` y `TERCERO` a cada registro. Los gastos catalogados con tipo `PERSONALES` se resaltan en **rojo suave**.
 * **Hojas Intermedias (Ocultas automáticamente)**:
   * `Resultados`: Hoja de procesamiento intermedio para cruces.
   * `auditoria`: Registros filtrados excluyendo los de tipo personal.
-  * `resultados-auditoria`: Sumatoria de base e IVA por cada número externo (`Num.Ext`).
 
 ---
 

@@ -4,6 +4,24 @@ Todos los cambios notables en este proyecto serán documentados en este archivo.
 
 El formato se basa en [Keep a Changelog](https://keepachangelog.com/es-ES/1.0.0/) y este proyecto se adhiere a [SemVer](https://semver.org/lang/es/).
 
+## [1.6.0] - 2026-08-25
+
+### Añadido
+- **Mapeo dinámico de columnas de AUD-COMP**: Reemplazo de seriales de IVA y BASE estáticos por selección directa de columnas leídas desde la pestaña `AUD-COMP` en la GUI.
+- **Categoría BASE 2**: Soporte para una segunda base de cálculo (`BASE_2`) seleccionable desde la GUI e integrada en las columnas de salida.
+- **Inyección directa en AUD-COMP**: La base y el IVA calculados se inyectan en columnas nuevas directamente en la hoja original `AUD-COMP` justo después de la columna "Tercero", conservando su formato original.
+- **Botón de limpieza para hojas opcionales**: Botón "✖" en la GUI para limpiar rápidamente los campos opcionales.
+
+### Modificado
+- **Hojas opcionales**: `contabilidad` y `terceros` ahora son opcionales. La aplicación puede ejecutar la conciliación utilizándolas como DataFrames vacíos si no se suministran.
+- **Filtro de exclusión en la hoja principal**: Se filtran y descartan registros con tipo de documento "application response" y grupo "emitido".
+- **Mejoras en GUI**:
+  - Exclusión mutua automática entre la asignación de columnas IVA y BASE en la GUI.
+  - Paleta de colores personalizada con categorización visual (IVA en Naranja, BASE en Verde, BASE 2 en Morado).
+  - Control de scroll mejorado en `ScrollableChecklist` para prevenir interferencias con el scroll de la ventana principal.
+  - Cambio del motor de temas a `clam` con estilos personalizados.
+- Se eliminó la hoja intermedia `resultados-auditoria` al inyectarse los datos directamente en `AUD-COMP`.
+
 ## [1.5.0] - 2026-08-24
 
 ### Añadido

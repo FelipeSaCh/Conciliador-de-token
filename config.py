@@ -24,22 +24,22 @@ SHEET_LABELS = {
     "autorretenedores": "Hoja Autorretenedores (opcional)",
 }
 
+ORDEN_AUDITORIA = ["Tipo	Número", "Num.Ext", "Fecha", "Nit/C.C.", "Tercero","BASE","IVA", "Detalle"]
 SHEET_ORDER = ["principal", "contabilidad", "terceros", "aud_comp", "autorretenedores"]
 REQUIRED_SHEETS = ["principal", "contabilidad", "terceros", "aud_comp"]
-OPTIONAL_SHEETS = ["autorretenedores"]
+OPTIONAL_SHEETS = ["autorretenedores","contabilidad","terceros"]
 
 ORDEN = ['Tipo de documento', 'CUFE/CUDE', 'Folio', 'Prefijo', 'Num.Ext', 'Divisa', 'Forma de Pago',
          'Medio de Pago', 'Fecha Emisión', 'Fecha Recepción', 'NIT Emisor', 'Nombre Emisor',
-         'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA', 'Total', 'Estado', 'Grupo']
+         'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA', 'BASE_2', 'Total', 'Estado', 'Grupo']
 
 COLUMNAS_DIAN_VS_CONT = [
     'Tipo de documento', 'CUFE/CUDE', 'Folio', 'Prefijo', 'Num.Ext', 'Divisa', 'Fecha',
     'Forma de Pago', 'Medio de Pago', 'Fecha Emisión', 'Fecha Recepción', 'NIT Emisor',
-    'Nombre Emisor', 'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA', 'Total', 'Estado', 'Grupo'
+    'Nombre Emisor', 'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA','BASE_2', 'Total', 'Estado', 'Grupo'
 ]
 
-SERIALES_IVA = ['240811019', '240816019', '135530019', '531520002']
-SERIALES_BASE = ['620501001', '620501019', '622501020', '52', '5305', '1540']
+COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle','Sumas']
 
 OUTPUT_SHEETS_TO_HIDE = ['Resultados', 'auditoria', 'resultados-auditoria']
 
@@ -48,3 +48,9 @@ CURRENCY_FORMAT = '"$"#,##0'
 
 PREVIEW_MAX_ROWS = 300
 PREVIEW_MAX_COLS = 60
+
+CATEGORY_COLORS = {
+    "iva": "#EB6425",
+    "base": "#16A34A",
+    "base2": "#9333EA",
+}

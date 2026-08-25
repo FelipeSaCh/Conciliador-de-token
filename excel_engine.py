@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +12,10 @@ from config import (
     OUTPUT_SHEETS_TO_HIDE,
     ORDEN,
     RED_FILL_COLOR,
+    ORDEN_AUDITORIA
 )
 from errors import ColumnaFaltanteError, ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
+
 
 
 class ConciliadorExcel:
@@ -22,22 +23,23 @@ class ConciliadorExcel:
     COLUMNAS_REQUERIDAS_CONTA = ['NIT']
     COLUMNAS_REQUERIDAS_TERCEROS = ['NIT']
 
-    def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None, progress_callback=None):
+    def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None,
+                 seriales_base2=None, progress_callback=None):
         self.file_path = Path(file_path)
         self.sheet_names = sheet_names
         self.progress_callback = progress_callback or (lambda mensaje: None)
-        
-        # Guardamos los seriales dinámicos provenientes de la interfaz. 
-        # Si no envían nada, usamos listas vacías por precaución.
+
         self.seriales_iva = seriales_iva if seriales_iva is not None else []
         self.seriales_base = seriales_base if seriales_base is not None else []
+        self.seriales_base2 = seriales_base2 if seriales_base2 is not None else []
+
 
     def _reportar(self, mensaje):
         logger.info(mensaje)
         self.progress_callback(mensaje)
 
     def _validar_hojas_existen(self, hojas_excel):
-        for clave in ('principal', 'contabilidad', 'terceros', 'aud_comp'):
+        for clave in ('principal', 'aud_comp'):
             nombre = self.sheet_names.get(clave)
             if not nombre:
                 raise ErrorUsuario(f"No se especificó el nombre de la hoja '{clave}'.")
@@ -69,87 +71,123 @@ class ConciliadorExcel:
                 raise ColumnaFaltanteError(nombre_hoja, col)
 
     def ejecutar(self):
-        if not self.file_path.exists():
-            raise ErrorUsuario(f"El archivo no existe: {self.file_path}")
+            if not self.file_path.exists():
+                raise ErrorUsuario(f"El archivo no existe: {self.file_path}")
 
-        try:
-            xls = pd.ExcelFile(self.file_path)
-        except Exception as e:
-            raise ErrorSistema(f"No se pudo abrir el archivo Excel: {e}") from e
-
-        hojas_excel = xls.sheet_names
-        self._validar_hojas_existen(hojas_excel)
-
-        self._reportar("Cargando hojas del archivo...")
-        try:
-            df_principal = pd.read_excel(self.file_path, sheet_name=self.sheet_names['principal'])
-            df_conta = pd.read_excel(self.file_path, sheet_name=self.sheet_names['contabilidad'])
-            df_tercer = pd.read_excel(self.file_path, sheet_name=self.sheet_names['terceros'])
-        except Exception as e:
-            raise ErrorSistema(f"Error leyendo las hojas principales: {e}") from e
-
-        df_aud_comp = self._cargar_hoja_con_encabezado_variable(self.file_path, self.sheet_names['aud_comp'])
-
-        nombre_auto = self.sheet_names.get('autorretenedores')
-        if nombre_auto and nombre_auto in hojas_excel:
             try:
-                df_autoretenedores = pd.read_excel(self.file_path, sheet_name=nombre_auto)
-                df_autoretenedores = self._limpiar_encabezados(df_autoretenedores, mayus=True)
+                xls = pd.ExcelFile(self.file_path)
             except Exception as e:
-                logger.warning(f"No se pudo leer la hoja de autorretenedores '{nombre_auto}': {e}")
+                raise ErrorSistema(f"No se pudo abrir el archivo Excel: {e}") from e
+
+            hojas_excel = xls.sheet_names
+            self._validar_hojas_existen(hojas_excel)
+
+            self._reportar("Cargando hojas del archivo...")
+            
+            # --- 1. HOJA PRINCIPAL (Obligatoria) ---
+            try:
+                df_principal = pd.read_excel(self.file_path, sheet_name=self.sheet_names['principal'])
+                df_principal = self._limpiar_encabezados(df_principal)
+                self._validar_columnas(df_principal, self.COLUMNAS_REQUERIDAS_PRINCIPAL, self.sheet_names['principal'])
+            except Exception as e:
+                raise ErrorSistema(f"Error leyendo la hoja principal: {e}") from e
+
+            # --- 2. HOJA AUD_COMP (Obligatoria) ---
+            df_aud_comp = self._cargar_hoja_con_encabezado_variable(self.file_path, self.sheet_names['aud_comp'])
+            df_aud_comp = self._limpiar_encabezados(df_aud_comp)
+            df_aud_comp = df_aud_comp.dropna(subset=df_aud_comp.columns[:6], how='all').copy()
+
+            # --- 3. HOJA CONTABILIDAD (Opcional) ---
+            nombre_conta = self.sheet_names.get('contabilidad')
+            if nombre_conta and nombre_conta in hojas_excel:
+                try:
+                    df_conta = pd.read_excel(self.file_path, sheet_name=nombre_conta)
+                    df_conta = self._limpiar_encabezados(df_conta, mayus=True)
+                    self._validar_columnas(df_conta, self.COLUMNAS_REQUERIDAS_CONTA, nombre_conta)
+                except Exception as e:
+                    logger.warning(f"Error al procesar hoja de contabilidad '{nombre_conta}': {e}")
+                    df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
+            else:
+                df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
+
+            # --- 4. HOJA TERCEROS (Opcional) ---
+            nombre_tercer = self.sheet_names.get('terceros')
+            if nombre_tercer and nombre_tercer in hojas_excel:
+                try:
+                    df_tercer = pd.read_excel(self.file_path, sheet_name=nombre_tercer)
+                    df_tercer = self._limpiar_encabezados(df_tercer, mayus=True)
+                    self._validar_columnas(df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, nombre_tercer)
+                except Exception as e:
+                    logger.warning(f"Error al procesar hoja de terceros '{nombre_tercer}': {e}")
+                    df_tercer = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_TERCEROS)
+            else:
+                df_tercer = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_TERCEROS)
+
+            # --- 5. HOJA AUTORRETENEDORES (Opcional) ---
+            nombre_auto = self.sheet_names.get('autorretenedores')
+            if nombre_auto and nombre_auto in hojas_excel:
+                try:
+                    df_autoretenedores = pd.read_excel(self.file_path, sheet_name=nombre_auto)
+                    df_autoretenedores = self._limpiar_encabezados(df_autoretenedores, mayus=True)
+                except Exception as e:
+                    logger.warning(f"No se pudo leer la hoja de autorretenedores '{nombre_auto}': {e}")
+                    df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
+            else:
                 df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
-        else:
-            df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
 
-        df_conta = self._limpiar_encabezados(df_conta, mayus=True)
-        df_principal = self._limpiar_encabezados(df_principal)
-        df_tercer = self._limpiar_encabezados(df_tercer, mayus=True)
-        df_aud_comp = self._limpiar_encabezados(df_aud_comp)
-        df_aud_comp = df_aud_comp.dropna(subset=df_aud_comp.columns[:6], how='all').copy()
+            # --- FILTRO DE LIMPIEZA OPTIMIZADO EN ORIGEN (Hoja Principal) ---
+            mask_ignorar = pd.Series(False, index=df_principal.index)
+            
+            col_tipo_doc = next((c for c in df_principal.columns if str(c).strip().lower() == 'tipo de documento'), None)
+            if col_tipo_doc:
+                mask_ignorar |= df_principal[col_tipo_doc].astype(str).str.contains('application response', case=False, na=False)
+                
+            col_grupo = next((c for c in df_principal.columns if str(c).strip().lower() == 'grupo'), None)
+            if col_grupo:
+                mask_ignorar |= df_principal[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
+                
+            df_principal = df_principal[~mask_ignorar].copy()
 
-        self._validar_columnas(df_principal, self.COLUMNAS_REQUERIDAS_PRINCIPAL, self.sheet_names['principal'])
-        self._validar_columnas(df_conta, self.COLUMNAS_REQUERIDAS_CONTA, self.sheet_names['contabilidad'])
-        self._validar_columnas(df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, self.sheet_names['terceros'])
+            self._reportar("Cruzando datos entre hojas...")
+            df = self._cruzar_datos(df_principal, df_conta, df_tercer)
 
-        self._reportar("Cruzando datos entre hojas...")
-        df = self._cruzar_datos(df_principal, df_conta, df_tercer)
+            self._reportar("Calculando bases, totales y consecutivos...")
+            df, es_personales = self._calcular_campos(df)
 
-        self._reportar("Calculando bases, totales y consecutivos...")
-        df, es_personales = self._calcular_campos(df)
+            df_resultado = df[~es_personales][['Prefijo', 'BASE', 'Num.Ext', 'TIPO-DETALLE']]
+            for col in ORDEN:
+                if col not in df.columns:
+                    df[col] = ''
+            df_auditoria = df[~es_personales][ORDEN].copy()
 
-        df_resultado = df[~es_personales][['Prefijo', 'BASE', 'Num.Ext', 'TIPO-DETALLE']]
-        for col in ORDEN:
-            if col not in df.columns:
-                df[col] = ''
-        df_auditoria = df[~es_personales][ORDEN].copy()
+            self._reportar("Procesando hoja de auditoría de comprobantes...")
+            df_res_auditoria = self._procesar_aud_comp(
+                df_aud_comp, self.seriales_iva, self.seriales_base, self.seriales_base2
+            )
 
-        self._reportar("Procesando hoja de auditoría de comprobantes...")
-            # Pasamos los seriales guardados en la instancia de la clase
-        df_res_auditoria = self._procesar_aud_comp(df_aud_comp, self.seriales_iva, self.seriales_base)
+            self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
+            df_dian_vs_cont, parejas_incompletas = self._unificar_dian_vs_cont(
+                df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores
+            )
 
-        self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
-        df_dian_vs_cont, parejas_incompletas = self._unificar_dian_vs_cont(
-            df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores
-        )
+            self._reportar("Escribiendo resultados en el archivo Excel...")
+            self._escribir_excel(
+                df_principal_cols=df_principal.columns,
+                df=df,
+                df_resultado=df_resultado,
+                df_auditoria=df_auditoria,
+                df_res_auditoria=df_res_auditoria,
+                df_dian_vs_cont=df_dian_vs_cont,
+                es_personales=es_personales,
+                parejas_incompletas=parejas_incompletas,
+            )
 
-        self._reportar("Escribiendo resultados en el archivo Excel...")
-        self._escribir_excel(
-            df_principal_cols=df_principal.columns,
-            df=df,
-            df_resultado=df_resultado,
-            df_auditoria=df_auditoria,
-            df_res_auditoria=df_res_auditoria,
-            df_dian_vs_cont=df_dian_vs_cont,
-            es_personales=es_personales,
-            parejas_incompletas=parejas_incompletas,
-        )
-
-        self._reportar("Proceso completado con éxito.")
-        return {
-            "filas_procesadas": len(df),
-            "filas_personales": int(es_personales.sum()),
-            "filas_sin_pareja": int(sum(parejas_incompletas)),
-        }
+            self._reportar("Proceso completado con éxito.")
+            return {
+                "filas_procesadas": len(df),
+                "filas_personales": int(es_personales.sum()),
+                "filas_sin_pareja": int(sum(parejas_incompletas)),
+            }
 
     def _cruzar_datos(self, df_principal, df_conta, df_tercer):
         df_principal = df_principal.copy()
@@ -222,18 +260,14 @@ class ConciliadorExcel:
         return df, es_personales
 
     @staticmethod
-    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base):
-        # Ahora usamos los parámetros 'seriales_iva' y 'seriales_base' en lugar de los globales
-        cols_iva = [
-            col for col in df_aud_comp.columns
-            if any(re.search(rf'\b{s}', str(col)) for s in seriales_iva)
-        ]
-        cols_base = [
-            col for col in df_aud_comp.columns
-            if any(re.search(rf'\b{s}', str(col)) for s in seriales_base)
-        ]
+    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2):
+        cols_iva = [col for col in seriales_iva if col in df_aud_comp.columns]
+        cols_base = [col for col in seriales_base if col in df_aud_comp.columns]
+        cols_base2 = [col for col in seriales_base2 if col in df_aud_comp.columns]
 
-        df_res_auditoria = pd.DataFrame()
+        # Mantenemos el index original para saber exactamente en qué fila de Excel escribir
+        df_res_auditoria = pd.DataFrame(index=df_aud_comp.index) 
+        
         df_res_auditoria['Num.Ext'] = (
             df_aud_comp['Num.Ext'].fillna('').astype(str) if 'Num.Ext' in df_aud_comp.columns else ''
         )
@@ -241,15 +275,18 @@ class ConciliadorExcel:
             df_aud_comp[cols_iva].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) if cols_iva else 0
         )
         df_res_auditoria['BASE'] = (
-            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1
-            if cols_base else 0
+            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1 if cols_base else 0
         )
-        return df_res_auditoria[['Num.Ext', 'BASE', 'IVA']]
-
+        df_res_auditoria['BASE_2'] = (
+            df_aud_comp[cols_base2].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1 if cols_base2 else 0
+        )
+        return df_res_auditoria[['Num.Ext', 'BASE', 'BASE_2', 'IVA']]
+    
     @staticmethod
     def _unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores):
         df_dian_prep = df_auditoria.copy()
         df_dian_prep['Fecha'] = ''
+        df_dian_prep['BASE_2'] = ''
         df_dian_prep['Prioridad_Fila'] = 1
         for col in COLUMNAS_DIAN_VS_CONT:
             if col not in df_dian_prep.columns:
@@ -271,11 +308,13 @@ class ConciliadorExcel:
         df_cont_prep['NIT Emisor'] = df_aud_comp['Nit/C.C.'] if 'Nit/C.C.' in df_aud_comp.columns else ''
         df_cont_prep['Nombre Emisor'] = df_aud_comp['Tercero'] if 'Tercero' in df_aud_comp.columns else ''
         df_cont_prep['BASE'] = df_res_auditoria['BASE']
+        df_cont_prep['BASE_2'] = df_res_auditoria['BASE_2']
         df_cont_prep['IVA'] = df_res_auditoria['IVA']
         df_cont_prep['Prioridad_Fila'] = 2
         for col in COLUMNAS_DIAN_VS_CONT:
             if col not in df_cont_prep.columns:
                 df_cont_prep[col] = ''
+
 
         df_dian_prep['Num.Ext_Clean'] = df_dian_prep['Num.Ext'].fillna('').astype(str).str.strip()
         df_cont_prep['Num.Ext_Clean'] = df_cont_prep['Num.Ext'].fillna('').astype(str).str.strip()
@@ -335,19 +374,65 @@ class ConciliadorExcel:
                 df_export_principal = df[list(cols_originales) + ['CONCEPTO', 'TERCERO']]
 
                 nombre_principal = self.sheet_names['principal']
+                nombre_aud_comp = self.sheet_names['aud_comp']
+
+                # 1. Guardar las hojas nuevas (NO guardamos aud_comp para no dañar el formato)
                 df_export_principal.to_excel(writer, index=False, sheet_name=nombre_principal)
                 df_resultado.to_excel(writer, index=False, sheet_name='Resultados')
                 df_auditoria.to_excel(writer, index=False, sheet_name='auditoria')
-                df_res_auditoria.to_excel(writer, index=False, sheet_name='resultados-auditoria')
                 df_dian_vs_cont.to_excel(writer, index=False, sheet_name='DIAN VS CONT')
 
                 wb = writer.book
                 sheet_principal = writer.sheets[nombre_principal]
                 sheet_resultados = writer.sheets['Resultados']
                 sheet_auditoria = writer.sheets['auditoria']
-                sheet_res_auditoria = writer.sheets['resultados-auditoria']
                 sheet_dian_vs_cont = writer.sheets['DIAN VS CONT']
+                
+                # --- INYECCIÓN EN HOJA ORIGINAL AUD-COMP ---
+                sheet_aud_comp_orig = wb[nombre_aud_comp]
+                header_row = 0
+                col_tercero = 0
 
+                # Buscar dinámicamente la fila de encabezados y la columna "Tercero"
+                for r in range(1, 20):
+                    for c in range(1, sheet_aud_comp_orig.max_column + 1):
+                        val = str(sheet_aud_comp_orig.cell(row=r, column=c).value).strip().upper()
+                        if val == 'TERCERO':
+                            header_row = r
+                            col_tercero = c
+                            break
+                    if header_row > 0:
+                        break
+
+                if header_row > 0 and col_tercero > 0:
+                    # Insertar 2 columnas exacto después de "Tercero" (empujando "Detalle" hacia la derecha)
+                    idx_insert = col_tercero + 1
+                    sheet_aud_comp_orig.insert_cols(idx_insert, amount=2)
+
+                    # Escribir y pintar encabezados
+                    c_base = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert)
+                    c_base.value = 'BASE'
+                    c_base.fill = PatternFill(start_color="339966", end_color="339966", fill_type="solid")
+
+                    c_iva = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 1)
+                    c_iva.value = 'IVA'
+                    c_iva.fill = PatternFill(start_color="FF9900", end_color="FF9900", fill_type="solid")
+
+                    # Inyectar los datos calculados usando el index para caer en la fila exacta de Excel
+                    for idx, row_data in df_res_auditoria.iterrows():
+                        # index de pandas + fila del encabezado + 1 = Fila exacta en Excel
+                        excel_row = header_row + 1 + idx 
+                        
+                        cell_b = sheet_aud_comp_orig.cell(row=excel_row, column=idx_insert)
+                        cell_b.value = row_data['BASE']
+                        cell_b.number_format = CURRENCY_FORMAT
+                        
+                        cell_i = sheet_aud_comp_orig.cell(row=excel_row, column=idx_insert + 1)
+                        cell_i.value = row_data['IVA']
+                        cell_i.number_format = CURRENCY_FORMAT
+                # ---------------------------------------------
+
+                # Filas rojas para errores/personales
                 red_fill = PatternFill(start_color=RED_FILL_COLOR, end_color=RED_FILL_COLOR, fill_type="solid")
 
                 for row_idx, es_pers in enumerate(es_personales, start=2):
@@ -360,18 +445,19 @@ class ConciliadorExcel:
                         for col_idx in range(1, len(COLUMNAS_DIAN_VS_CONT) + 1):
                             sheet_dian_vs_cont.cell(row=row_idx, column=col_idx).fill = red_fill
 
+                # Formato de moneda para el resto de las hojas
                 for sheet_target, df_target in [
                     (sheet_resultados, df_resultado),
                     (sheet_auditoria, df_auditoria),
-                    (sheet_res_auditoria, df_res_auditoria),
                     (sheet_dian_vs_cont, df_dian_vs_cont)
                 ]:
-                    for col_name in ['BASE', 'IVA', 'Total']:
+                    for col_name in ['BASE', 'BASE_2', 'IVA', 'Total']:
                         if col_name in df_target.columns:
                             col_idx = df_target.columns.get_loc(col_name) + 1
                             for row in range(2, len(df_target) + 2):
                                 sheet_target.cell(row=row, column=col_idx).number_format = CURRENCY_FORMAT
 
+                # Tabla DIAN VS CONT
                 max_row = len(df_dian_vs_cont) + 1
                 max_col_letter = get_column_letter(len(COLUMNAS_DIAN_VS_CONT))
                 tabla = Table(displayName="TablaDianVsCont", ref=f"A1:{max_col_letter}{max_row}")
@@ -383,9 +469,11 @@ class ConciliadorExcel:
                     col_letter = get_column_letter(col[0].column)
                     sheet_dian_vs_cont.column_dimensions[col_letter].width = max(max_len + 3, 12)
 
+                # Ocultar hojas configuradas
                 for sheetname in OUTPUT_SHEETS_TO_HIDE:
                     if sheetname in wb.sheetnames:
                         wb[sheetname].sheet_state = 'hidden'
+                        
         except (ErrorUsuario, ErrorSistema):
             raise
         except Exception as e:

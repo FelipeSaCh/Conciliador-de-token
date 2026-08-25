@@ -3,7 +3,6 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-import sv_ttk
 import os
 import pandas as pd
 
@@ -16,8 +15,8 @@ from config import (
     OPTIONAL_SHEETS,
     SHEET_LABELS,
     SHEET_ORDER,
-    SERIALES_IVA,
-    SERIALES_BASE
+    COLUMNAS_EXCLUIDAS_AUD_COMP,
+    CATEGORY_COLORS,
 )
 from errors import ErrorSistema, ErrorUsuario, logger
 from excel_engine import ConciliadorExcel
@@ -55,10 +54,8 @@ class ScrollableChecklist(ttk.Frame):
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
 
-        self.inner.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
+        self._scroll_job = None
+        self.inner.bind("<Configure>", self._on_inner_configure)
         self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.canvas.bind(
             "<Configure>",
@@ -69,21 +66,26 @@ class ScrollableChecklist(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
-        for widget in (self.canvas, self.inner):
-            widget.bind("<Enter>", lambda e: self._bind_wheel())
-            widget.bind("<Leave>", lambda e: self._unbind_wheel())
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        self.canvas.bind_all("<Button-4>", self._on_wheel, add="+")
+        self.canvas.bind_all("<Button-5>", self._on_wheel, add="+")
 
-    def _bind_wheel(self):
-        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
-        self.canvas.bind_all("<Button-4>", self._on_wheel)
-        self.canvas.bind_all("<Button-5>", self._on_wheel)
+    def _on_inner_configure(self, _event):
+        if self._scroll_job is not None:
+            self.after_cancel(self._scroll_job)
+        self._scroll_job = self.after(30, self._actualizar_scrollregion)
 
-    def _unbind_wheel(self):
-        self.canvas.unbind_all("<MouseWheel>")
-        self.canvas.unbind_all("<Button-4>")
-        self.canvas.unbind_all("<Button-5>")
+    def _actualizar_scrollregion(self):
+        self._scroll_job = None
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_wheel(self, event):
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        w = widget
+        while w is not None and w is not self:
+            w = w.master
+        if w is not self:
+            return
         if getattr(event, "num", None) == 4:
             self.canvas.yview_scroll(-3, "units")
         elif getattr(event, "num", None) == 5:
@@ -95,7 +97,8 @@ class ScrollableChecklist(ttk.Frame):
 class ConciliadorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        sv_ttk.set_theme("light")
+        self.style_engine = ttk.Style(self)
+        self.style_engine.theme_use("clam")
         self.configure(bg=PALETTE["bg"])
         self.title(f"{APP_NAME} - v{APP_VERSION}")
         self.geometry("880x700")
@@ -104,6 +107,7 @@ class ConciliadorApp(tk.Tk):
         self.file_path = tk.StringVar()
         self.sheet_vars = {clave: tk.StringVar(value=nombre) for clave, nombre in DEFAULT_SHEET_NAMES.items()}
         self.hojas_disponibles = []
+        self.column_vars = {}
         self._cola_eventos = queue.Queue()
         self._procesando = False
 
@@ -125,12 +129,12 @@ class ConciliadorApp(tk.Tk):
 
     # ------------------------------------------------------------------ STYLES & UI SETUP
     def _setup_styles(self):
-        self.style = ttk.Style(self)
+        self.style = self.style_engine
 
         font_family = "Segoe UI" if "win32" in self.tk.call("tk", "windowingsystem") else "Helvetica"
         self._font = font_family
 
-        self.style.configure(".", font=(font_family, 9))
+        self.style.configure(".", font=(font_family, 9), background=PALETTE["bg"])
         self.style.configure("TFrame", background=PALETTE["bg"])
         self.style.configure("Card.TFrame", background=PALETTE["surface"])
         self.style.configure("CardAlt.TFrame", background=PALETTE["surface_alt"])
@@ -252,6 +256,114 @@ class ConciliadorApp(tk.Tk):
             troughcolor=PALETTE["border"],
             borderwidth=0,
         )
+        self.style.configure(
+            "TNotebook",
+            background=PALETTE["bg"],
+            borderwidth=0,
+            tabmargins=(4, 6, 4, 0),
+        )
+        self.style.configure(
+            "TNotebook.Tab",
+            font=(font_family, 9, "bold"),
+            padding=(16, 8),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text_muted"],
+        )
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", PALETTE["surface"])],
+            foreground=[("selected", PALETTE["text"])],
+        )
+
+        self.style.configure(
+            "Secondary.TButton",
+            font=(font_family, 9),
+            padding=(10, 6),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["border_strong"],
+        )
+        self.style.map(
+            "Secondary.TButton",
+            background=[("active", PALETTE["border"])],
+        )
+        self.style.configure(
+            "Toggle.TButton",
+            font=(font_family, 8, "bold"),
+            padding=(8, 4),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["border_strong"],
+        )
+        self.style.map(
+            "Toggle.TButton",
+            background=[("active", PALETTE["border"])],
+        )
+
+        self.style.configure(
+            "TCombobox",
+            padding=(6, 5),
+            fieldbackground=PALETTE["surface_alt"],
+            background=PALETTE["surface_alt"],
+            arrowsize=14,
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", PALETTE["surface_alt"])],
+            background=[("readonly", PALETTE["surface_alt"])],
+        )
+        self.style.configure(
+            "TEntry",
+            padding=(8, 6),
+            fieldbackground=PALETTE["surface_alt"],
+            bordercolor=PALETTE["border_strong"],
+        )
+        self.style.map(
+            "TEntry",
+            fieldbackground=[("readonly", PALETTE["surface_alt"])],
+        )
+
+        self.style.configure(
+            "Status.TLabel",
+            font=(font_family, 8),
+            padding=(14, 7),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text_muted"],
+        )
+        self.style.configure(
+            "StatusDot.TLabel",
+            font=(font_family, 10),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text_muted"],
+        )
+
+        self.style.configure("TSeparator", background=PALETTE["border_strong"])
+        self.style.configure(
+            "Card.TLabelframe",
+            background=PALETTE["surface"],
+            borderwidth=1,
+            relief="solid",
+            bordercolor=PALETTE["border_strong"],
+        )
+        self.style.configure(
+            "Card.TLabelframe.Label",
+            font=(font_family, 9, "bold"),
+            foreground=PALETTE["text"],
+            background=PALETTE["surface"],
+        )
+        self.style.configure("Card.TCheckbutton", background=PALETTE["surface"], font=(font_family, 9))
+        self.style.map(
+            "Card.TCheckbutton",
+            background=[("active", PALETTE["surface"])],
+        )
+
+        self.style.configure(
+            "TProgressbar",
+            thickness=6,
+            background=PALETTE["primary"],
+            troughcolor=PALETTE["border"],
+            borderwidth=0,
+        )
 
     def _build_ui(self):
         self._build_barra_superior()
@@ -338,6 +450,8 @@ class ConciliadorApp(tk.Tk):
             bg=PALETTE["primary"] if enabled else "#9CA3AF",
         )
 
+    # gui.py — corregido
+
     def _build_tab_config(self):
         wrapper = ttk.Frame(self.tab_config, padding=(4, 16, 4, 4), style="TFrame")
         wrapper.pack(fill=tk.BOTH, expand=True)
@@ -380,6 +494,28 @@ class ConciliadorApp(tk.Tk):
             combo.grid(row=i, column=1, sticky="ew", pady=9)
             self.combos_hojas[clave] = combo
 
+            if clave == "aud_comp":
+                combo.bind("<<ComboboxSelected>>", self._refrescar_columnas_aud_comp)
+
+            # --- NUEVO: Botón para limpiar campos opcionales ---
+            if es_opcional:
+                btn_limpiar = tk.Button(
+                    grid_frame,
+                    text="✖",
+                    command=lambda c=clave: self.sheet_vars[c].set(""), # Borra el contenido de la variable
+                    bg=PALETTE["surface"],
+                    fg=PALETTE["text_muted"],
+                    font=(self._font, 10, "bold"),
+                    relief="flat",
+                    bd=0,
+                    cursor="hand2"
+                )
+                # Efectos hover para que se ponga rojo al pasar el mouse
+                btn_limpiar.bind("<Enter>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["danger"]))
+                btn_limpiar.bind("<Leave>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["text_muted"]))
+                
+                btn_limpiar.grid(row=i, column=2, padx=(8, 0))
+
         grid_frame.columnconfigure(1, weight=1)
 
         ttk.Label(
@@ -404,53 +540,161 @@ class ConciliadorApp(tk.Tk):
 
         ttk.Label(
             texto_seriales,
-            text="Selecciona los seriales que se incluirán en la conciliación.",
+            text="Marca a qué categoría(s) pertenece cada columna de la hoja AUD-COMP.",
             style="SubheaderCard.TLabel"
         ).pack(anchor="w", pady=(4, 0))
 
-        cols_frame = ttk.Frame(card_seriales, style="Card.TFrame")
-        cols_frame.pack(fill=tk.BOTH, expand=True, pady=(16, 0))
+        barra_toggle = ttk.Frame(card_seriales, style="Card.TFrame")
+        barra_toggle.pack(fill=tk.X, pady=(14, 10))
 
-        frame_iva = ttk.LabelFrame(cols_frame, text="  Seriales IVA  ", padding=14, style="Card.TLabelframe")
-        frame_iva.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self._build_leyenda_categorias(barra_toggle)
 
-        frame_base = ttk.LabelFrame(cols_frame, text="  Seriales BASE  ", padding=14, style="Card.TLabelframe")
-        frame_base.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        acciones_masivas = ttk.Frame(card_seriales, style="Card.TFrame")
+        acciones_masivas.pack(fill=tk.X, pady=(0, 10))
 
-        self.vars_iva = {}
-        self.vars_base = {}
+        for etiqueta, categoria, color in (
+            ("IVA", "iva", CATEGORY_COLORS["iva"]),
+            ("BASE", "base", CATEGORY_COLORS["base"]),
+            ("BASE 2", "base2", CATEGORY_COLORS["base2"]),
+        ):
+            grupo = tk.Frame(acciones_masivas, bg=PALETTE["surface"])
+            grupo.pack(side=tk.LEFT, padx=(0, 20))
+            tk.Frame(grupo, bg=color, width=10, height=10).pack(side=tk.LEFT, padx=(0, 6), pady=2)
+            ttk.Button(
+                grupo, text=f"Todo {etiqueta}", style="Toggle.TButton", cursor="hand2",
+                command=lambda c=categoria: self._marcar_todos(c, True)
+            ).pack(side=tk.LEFT)
+            ttk.Button(
+                grupo, text="Ninguno", style="Toggle.TButton", cursor="hand2",
+                command=lambda c=categoria: self._marcar_todos(c, False)
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
-        self._build_toggle_bar(frame_iva, self.vars_iva, SERIALES_IVA)
-        self._build_toggle_bar(frame_base, self.vars_base, SERIALES_BASE)
+        self.lista_columnas_aud = ScrollableChecklist(card_seriales, height=240)
+        self.lista_columnas_aud.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
-        lista_iva = ScrollableChecklist(frame_iva, height=190)
-        lista_iva.pack(fill=tk.BOTH, expand=True)
-        for serial in SERIALES_IVA:
-            var = tk.BooleanVar(value=True)
-            cb = ttk.Checkbutton(lista_iva.inner, text=serial, variable=var, style="Card.TCheckbutton", cursor="hand2")
-            cb.pack(anchor="w", pady=3, padx=(2, 8))
-            self.vars_iva[serial] = var
+        self._poblar_checklist_columnas([])
 
-        lista_base = ScrollableChecklist(frame_base, height=190)
-        lista_base.pack(fill=tk.BOTH, expand=True)
-        for serial in SERIALES_BASE:
-            var = tk.BooleanVar(value=True)
-            cb = ttk.Checkbutton(lista_base.inner, text=serial, variable=var, style="Card.TCheckbutton", cursor="hand2")
-            cb.pack(anchor="w", pady=3, padx=(2, 8))
-            self.vars_base[serial] = var
+    def _build_leyenda_categorias(self, parent):
+        for etiqueta, color in (
+            ("IVA", CATEGORY_COLORS["iva"]),
+            ("BASE", CATEGORY_COLORS["base"]),
+            ("BASE 2", CATEGORY_COLORS["base2"]),
+        ):
+            chip = tk.Frame(parent, bg=color)
+            chip.pack(side=tk.LEFT, padx=(0, 16))
+            tk.Label(
+                chip, text=f"  {etiqueta}  ", bg=color, fg="#FFFFFF",
+                font=(self._font, 8, "bold")
+            ).pack(ipady=2)
 
-    def _build_toggle_bar(self, parent, vars_dict, seriales):
-        barra = ttk.Frame(parent, style="Card.TFrame")
-        barra.pack(fill=tk.X, pady=(0, 10))
+    def _refrescar_columnas_aud_comp(self, *_):
+        ruta = self.file_path.get()
+        hoja = self.sheet_vars["aud_comp"].get().strip()
+        if not ruta or not hoja or hoja not in self.hojas_disponibles:
+            self._poblar_checklist_columnas([])
+            return
 
-        ttk.Button(
-            barra, text="Todos", style="Toggle.TButton", cursor="hand2",
-            command=lambda: [v.set(True) for v in vars_dict.values()]
-        ).pack(side=tk.LEFT)
-        ttk.Button(
-            barra, text="Ninguno", style="Toggle.TButton", cursor="hand2",
-            command=lambda: [v.set(False) for v in vars_dict.values()]
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        try:
+            df = ConciliadorExcel._cargar_hoja_con_encabezado_variable(ruta, hoja)
+        except Exception as e:
+            logger.warning(f"No se pudieron leer las columnas de AUD-COMP: {e}")
+            self._poblar_checklist_columnas([])
+            return
+
+        columnas = []
+        for col in df.columns:
+            nombre = str(col).strip()
+            if not nombre or nombre.startswith("Unnamed"):
+                continue
+            if nombre in COLUMNAS_EXCLUIDAS_AUD_COMP:
+                continue
+            if df[col].dropna().empty:
+                continue
+            columnas.append(nombre)
+
+        self._poblar_checklist_columnas(columnas)
+
+    def _poblar_checklist_columnas(self, columnas):
+        self.lista_columnas_aud.canvas.unbind("<Configure>")
+        for widget in self.lista_columnas_aud.inner.winfo_children():
+            widget.destroy()
+
+        self.column_vars = {}
+
+        if not columnas:
+            ttk.Label(
+                self.lista_columnas_aud.inner,
+                text="Selecciona un archivo y la hoja AUD-COMP para ver las columnas disponibles.",
+                style="SubheaderCard.TLabel"
+            ).pack(anchor="w", padx=4, pady=8)
+        else:
+            for idx, col in enumerate(columnas):
+                fondo_fila = PALETTE["surface"] if idx % 2 == 0 else PALETTE["surface_alt"]
+                fila = tk.Frame(self.lista_columnas_aud.inner, bg=fondo_fila)
+                fila.pack(fill=tk.X, pady=1)
+
+                contenido = tk.Frame(fila, bg=fondo_fila, padx=10, pady=7)
+                contenido.pack(fill=tk.X)
+
+                # SOLUCIÓN VISUAL: Quitamos expand=True y fijamos un width para 
+                # mantener alineadas las casillas cerca del texto.
+                tk.Label(
+                    contenido, text=col, bg=fondo_fila, fg=PALETTE["text"],
+                    font=(self._font, 9), anchor="w", width=50
+                ).pack(side=tk.LEFT, padx=(0, 20))
+
+                vars_col = {}
+                for clave_cat, color in CATEGORY_COLORS.items():
+                    var = tk.BooleanVar(value=False)
+                    chip = self._crear_chip_toggle(contenido, color, var)
+                    chip.pack(side=tk.LEFT, padx=(6, 0))
+                    vars_col[clave_cat] = var
+
+                # SOLUCIÓN LÓGICA: Exclusión mutua entre IVA y BASE
+                var_iva = vars_col.get("iva")
+                var_base = vars_col.get("base")
+
+                if var_iva and var_base:
+                    # Usamos una función constructora para evitar problemas de alcance (scope) en el ciclo for
+                    def hacer_exclusivo(v_activa, v_otra):
+                        def _trace(*args):
+                            if v_activa.get():  # Si esta variable se enciende
+                                v_otra.set(False) # Apagamos la otra
+                        return _trace
+
+                    # Enlazamos los eventos a las variables
+                    var_iva.trace_add("write", hacer_exclusivo(var_iva, var_base))
+                    var_base.trace_add("write", hacer_exclusivo(var_base, var_iva))
+
+                self.column_vars[col] = vars_col
+
+        self.lista_columnas_aud.canvas.bind(
+            "<Configure>",
+            lambda e: self.lista_columnas_aud.canvas.itemconfigure(self.lista_columnas_aud._window, width=e.width)
+        )
+        self.lista_columnas_aud._actualizar_scrollregion()
+
+    def _crear_chip_toggle(self, parent, color, var):
+        chip = tk.Label(
+            parent, text=" ", width=3, bg=PALETTE["border"], relief="flat",
+            cursor="hand2", font=(self._font, 8, "bold")
+        )
+
+        def _refrescar(*_):
+            chip.configure(bg=color if var.get() else PALETTE["border"])
+
+        def _toggle(_event=None):
+            var.set(not var.get())
+            _refrescar()
+
+        chip.bind("<Button-1>", _toggle)
+        var.trace_add("write", _refrescar)
+        _refrescar()
+        return chip
+
+    def _marcar_todos(self, tipo, valor):
+        for vars_col in self.column_vars.values():
+            vars_col[tipo].set(valor)
 
     def _build_tab_preview(self):
         self.vista_previa = VistaPreviaExcel(self.tab_preview)
@@ -537,15 +781,23 @@ class ConciliadorApp(tk.Tk):
         self.hojas_disponibles = xls.sheet_names
 
         for clave, combo in self.combos_hojas.items():
-            combo['values'] = self.hojas_disponibles
+            # Si es opcional, le agregamos una opción vacía ("") al principio de la lista
+            if clave in OPTIONAL_SHEETS:
+                combo['values'] = [""] + self.hojas_disponibles
+            else:
+                combo['values'] = self.hojas_disponibles
+                
             actual = self.sheet_vars[clave].get()
-            if actual not in self.hojas_disponibles:
+            
+            # Si el valor actual no está en el archivo y no es un campo vacío intencional
+            if actual not in self.hojas_disponibles and actual != "":
                 if clave in OPTIONAL_SHEETS:
                     self.sheet_vars[clave].set("")
                 elif self.hojas_disponibles:
                     self.sheet_vars[clave].set(self.hojas_disponibles[0])
 
         self.vista_previa.cargar_archivo(ruta, self.hojas_disponibles)
+        self._refrescar_columnas_aud_comp()
         self._set_estado(f"Archivo cargado: {Path(ruta).name} ({len(self.hojas_disponibles)} hojas)")
 
     def _on_abrir_logs(self):
@@ -591,13 +843,14 @@ class ConciliadorApp(tk.Tk):
             messagebox.showwarning("Datos incompletos", str(e))
             return
 
-        seriales_iva_seleccionados = [s for s, var in self.vars_iva.items() if var.get()]
-        seriales_base_seleccionados = [s for s, var in self.vars_base.items() if var.get()]
+        seriales_iva_seleccionados = [col for col, v in self.column_vars.items() if v["iva"].get()]
+        seriales_base_seleccionados = [col for col, v in self.column_vars.items() if v["base"].get()]
+        seriales_base2_seleccionados = [col for col, v in self.column_vars.items() if v["base2"].get()]
 
         if not seriales_iva_seleccionados or not seriales_base_seleccionados:
             respuesta_vacia = messagebox.askyesno(
                 "Seriales incompletos",
-                "Has dejado una de las categorías de seriales vacía (sin cheques). ¿Deseas continuar?"
+                "Has dejado una de las categorías de columnas vacía (sin marcar). ¿Deseas continuar?"
             )
             if not respuesta_vacia:
                 return
@@ -621,17 +874,21 @@ class ConciliadorApp(tk.Tk):
 
         hilo = threading.Thread(
             target=self._ejecutar_en_hilo,
-            args=(self.file_path.get(), sheet_names, seriales_iva_seleccionados, seriales_base_seleccionados),
+            args=(
+                self.file_path.get(), sheet_names,
+                seriales_iva_seleccionados, seriales_base_seleccionados, seriales_base2_seleccionados
+            ),
             daemon=True
         )
         hilo.start()
 
-    def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base):
+    def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2):
         conciliador = ConciliadorExcel(
             ruta,
             sheet_names,
             seriales_iva=seriales_iva,
             seriales_base=seriales_base,
+            seriales_base2=seriales_base2,
             progress_callback=self._on_progreso
         )
         try:
@@ -646,7 +903,6 @@ class ConciliadorApp(tk.Tk):
         except Exception as e:
             logger.exception("Error inesperado durante la ejecución")
             self._cola_eventos.put(("error_sistema", f"Error inesperado: {e}"))
-
     def _on_progreso(self, mensaje):
         self._cola_eventos.put(("log", mensaje))
 
