@@ -5,7 +5,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import os
 import pandas as pd
-
+from informes_iva import GeneradorInformeIVA
 
 from config import (
     APP_NAME,
@@ -47,7 +47,7 @@ class ScrollableChecklist(ttk.Frame):
 
     def __init__(self, parent, height=170, **kwargs):
         super().__init__(parent, style="Card.TFrame", **kwargs)
-
+        self._xls_actual=None
         self.canvas = tk.Canvas(
             self, bg=PALETTE["surface"], highlightthickness=0, bd=0, height=height
         )
@@ -109,11 +109,14 @@ class ConciliadorApp(tk.Tk):
         self.hojas_disponibles = []
         self.column_vars = {}
         self._cola_eventos = queue.Queue()
+        self.hoja_iva_var = tk.StringVar()
+        self._procesando_iva = False
         self._procesando = False
 
         self._setup_styles()
         self._build_ui()
         self.after(150, self._procesar_cola)
+
 
     def set_app_icon(self):
         icon_path = Path(__file__).resolve().parent
@@ -128,6 +131,81 @@ class ConciliadorApp(tk.Tk):
                 logger.info("Icono de la aplicación establecido correctamente.")
 
     # ------------------------------------------------------------------ STYLES & UI SETUP
+
+    def _on_liberar_archivo(self):
+        if self._procesando or self._procesando_iva:
+            messagebox.showwarning("Proceso en curso", "Espera a que finalice el proceso actual antes de liberar el archivo.")
+            return
+
+        self.file_path.set("")
+        self.hojas_disponibles = []
+
+        for clave, combo in self.combos_hojas.items():
+            combo['values'] = []
+            self.sheet_vars[clave].set("" if clave in OPTIONAL_SHEETS else DEFAULT_SHEET_NAMES[clave])
+
+        self._poblar_checklist_columnas([])
+
+        if hasattr(self, "combo_hoja_iva"):
+            self.combo_hoja_iva['values'] = []
+        if hasattr(self, "hoja_iva_var"):
+            self.hoja_iva_var.set("")
+        if hasattr(self, "lbl_estado_iva"):
+            self.lbl_estado_iva.configure(text="")
+
+        for widget in self.tab_preview.winfo_children():
+            widget.destroy()
+        self._build_tab_preview()
+
+        import gc
+        gc.collect()
+
+        self._set_estado("Sesión liberada. El archivo quedó disponible para otros programas.")
+            
+    def _on_generar_informe_iva(self):
+        if self._procesando_iva:
+            return
+        if not self.file_path.get():
+            messagebox.showwarning("Archivo requerido", "Primero debes seleccionar un archivo de Excel.")
+            return
+        hoja = self.hoja_iva_var.get().strip()
+        if not hoja:
+            messagebox.showwarning("Hoja requerida", "Debes seleccionar la hoja de token principal.")
+            return
+
+        self._procesando_iva = True
+        self._set_btn_enabled(self.btn_generar_iva, False)
+        self.lbl_estado_iva.configure(text="Generando informe...")
+
+        hilo = threading.Thread(
+            target=self._generar_informe_iva_en_hilo,
+            args=(self.file_path.get(), hoja),
+            daemon=True
+        )
+        hilo.start()
+
+    def _generar_informe_iva_en_hilo(self, ruta, hoja):
+        generador = GeneradorInformeIVA(ruta, hoja, progress_callback=self._on_progreso_iva)
+        try:
+            resumen = generador.generar()
+            self._cola_eventos.put(("iva_exito", resumen))
+        except ErrorUsuario as e:
+            logger.warning(f"Error de usuario al generar informe de IVA: {e}")
+            self._cola_eventos.put(("iva_error_usuario", str(e)))
+        except ErrorSistema as e:
+            logger.error(f"Error de sistema al generar informe de IVA: {e}")
+            self._cola_eventos.put(("iva_error_sistema", str(e)))
+        except Exception as e:
+            logger.exception("Error inesperado al generar informe de IVA")
+            self._cola_eventos.put(("iva_error_sistema", f"Error inesperado: {e}"))
+
+    def _on_progreso_iva(self, mensaje):
+        self._cola_eventos.put(("iva_log", mensaje))
+
+    def _finalizar_iva(self):
+        self._procesando_iva = False
+        self._set_btn_enabled(self.btn_generar_iva, True)
+
     def _setup_styles(self):
         self.style = self.style_engine
 
@@ -376,14 +454,20 @@ class ConciliadorApp(tk.Tk):
         self.tab_config = ttk.Frame(self.notebook, style="TFrame")
         self.tab_preview = ttk.Frame(self.notebook, style="TFrame")
         self.tab_ejecucion = ttk.Frame(self.notebook, style="TFrame")
+        self.tab_reportes_iva=ttk.Frame(self.notebook, style="TFrame")
+        self.tab_token=ttk.Frame(self.notebook, style="TFrame")
 
-        self.notebook.add(self.tab_config, text="  ⚙  Configuración  ")
+        self.notebook.add(self.tab_token, text=" 🧾  Formatear Token  ")
+        self.notebook.add(self.tab_config, text="  ⚙  Configuración para auditoria  ")
+        self.notebook.add(self.tab_reportes_iva, text="  📊  Reportes IVA  ")
         self.notebook.add(self.tab_preview, text="  👁  Vista Previa  ")
         self.notebook.add(self.tab_ejecucion, text="  ▶  Ejecución y Logs  ")
-
+        
         self._build_tab_config()
         self._build_tab_preview()
         self._build_tab_ejecucion()
+        self._build_tab_reportes_iva()
+        self._build_tab_token()
 
         self._build_barra_estado()
 
@@ -415,6 +499,14 @@ class ConciliadorApp(tk.Tk):
 
         btn_browse = self._btn_primary(fila_archivo, "📂  Examinar...", self._on_abrir_archivo)
         btn_browse.pack(side=tk.LEFT)
+
+        btn_liberar=ttk.Button(            
+            fila_archivo,
+            text="🔓 Liberar archivo",
+            command=self._on_liberar_archivo,
+            cursor="hand2"
+        )
+        btn_liberar.pack(side=tk.LEFT, padx=(12, 0))
 
     def _card(self, parent, **pack_kwargs):
         outer = tk.Frame(parent, bg=PALETTE["border_strong"])
@@ -451,6 +543,9 @@ class ConciliadorApp(tk.Tk):
         )
 
     # gui.py — corregido
+
+
+       
 
     def _build_tab_config(self):
         wrapper = ttk.Frame(self.tab_config, padding=(4, 16, 4, 4), style="TFrame")
@@ -556,6 +651,7 @@ class ConciliadorApp(tk.Tk):
             ("IVA", "iva", CATEGORY_COLORS["iva"]),
             ("BASE", "base", CATEGORY_COLORS["base"]),
             ("BASE 2", "base2", CATEGORY_COLORS["base2"]),
+            ("Autorretenedor", "autorretenedor", CATEGORY_COLORS["autorretenedor"])
         ):
             grupo = tk.Frame(acciones_masivas, bg=PALETTE["surface"])
             grupo.pack(side=tk.LEFT, padx=(0, 20))
@@ -579,6 +675,7 @@ class ConciliadorApp(tk.Tk):
             ("IVA", CATEGORY_COLORS["iva"]),
             ("BASE", CATEGORY_COLORS["base"]),
             ("BASE 2", CATEGORY_COLORS["base2"]),
+            ("Autorretenedor", CATEGORY_COLORS["autorretenedor"])
         ):
             chip = tk.Frame(parent, bg=color)
             chip.pack(side=tk.LEFT, padx=(0, 16))
@@ -653,18 +750,21 @@ class ConciliadorApp(tk.Tk):
                 # SOLUCIÓN LÓGICA: Exclusión mutua entre IVA y BASE
                 var_iva = vars_col.get("iva")
                 var_base = vars_col.get("base")
+                var_retenedor = vars_col.get("autorretenedor")
 
-                if var_iva and var_base:
+                if var_iva and var_base and var_retenedor:
                     # Usamos una función constructora para evitar problemas de alcance (scope) en el ciclo for
-                    def hacer_exclusivo(v_activa, v_otra):
+                    def hacer_exclusivo(v_activa, v_otra, v_retenedor=None):
                         def _trace(*args):
                             if v_activa.get():  # Si esta variable se enciende
                                 v_otra.set(False) # Apagamos la otra
+                                v_retenedor.set(False) if v_retenedor else None # Apagamos la otra si existe
                         return _trace
 
                     # Enlazamos los eventos a las variables
-                    var_iva.trace_add("write", hacer_exclusivo(var_iva, var_base))
-                    var_base.trace_add("write", hacer_exclusivo(var_base, var_iva))
+                    var_iva.trace_add("write", hacer_exclusivo(var_iva, var_base, var_retenedor))
+                    var_base.trace_add("write", hacer_exclusivo(var_base, var_iva, var_retenedor))
+                    var_retenedor.trace_add("write", hacer_exclusivo(var_retenedor, var_iva, var_base))
 
                 self.column_vars[col] = vars_col
 
@@ -699,6 +799,59 @@ class ConciliadorApp(tk.Tk):
     def _build_tab_preview(self):
         self.vista_previa = VistaPreviaExcel(self.tab_preview)
         self.vista_previa.pack(fill=tk.BOTH, expand=True, padx=4, pady=(16, 4))
+
+    def _build_tab_token(self):
+        wrapper = ttk.Frame(self.tab_token, padding=(4, 16, 4, 4), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            wrapper,
+            text="Formateo de Token",
+            style="CardHeader.TLabel"
+        ).pack(anchor="w", pady=(0, 16))
+
+
+    def _build_tab_reportes_iva(self):
+        wrapper = ttk.Frame(self.tab_reportes_iva, padding=(4, 16, 4, 4), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            wrapper,
+            text="Generación de Reportes de IVA",
+            style="CardHeader.TLabel"
+        ).pack(anchor="w", pady=(0, 16))
+
+        card = self._card(wrapper, fill=tk.X, pady=(0, 16))
+
+        ttk.Label(card, text="Configuración del Informe", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            card,
+            text="Selecciona la hoja de token principal sobre la cual se generará el informe de IVA.",
+            style="SubheaderCard.TLabel"
+        ).pack(anchor="w", pady=(4, 16))
+
+        fila_hoja = ttk.Frame(card, style="Card.TFrame")
+        fila_hoja.pack(fill=tk.X)
+
+        ttk.Label(fila_hoja, text="Hoja de token", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 24))
+
+        self.combo_hoja_iva = ttk.Combobox(
+            fila_hoja,
+            textvariable=self.hoja_iva_var,
+            width=45,
+            state="readonly",
+            cursor="hand2"
+        )
+        self.combo_hoja_iva.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        fila_accion = ttk.Frame(card, style="Card.TFrame")
+        fila_accion.pack(fill=tk.X, pady=(20, 0))
+
+        self.btn_generar_iva = self._btn_primary(fila_accion, "📊  Generar Informe", self._on_generar_informe_iva)
+        self.btn_generar_iva.pack(side=tk.LEFT)
+
+        self.lbl_estado_iva = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
+        self.lbl_estado_iva.pack(side=tk.LEFT, padx=(16, 0))
 
     def _build_tab_ejecucion(self):
         contenedor = ttk.Frame(self.tab_ejecucion, padding=(4, 16, 4, 4), style="TFrame")
@@ -779,17 +932,16 @@ class ConciliadorApp(tk.Tk):
 
         self.file_path.set(ruta)
         self.hojas_disponibles = xls.sheet_names
+        xls.close()
 
         for clave, combo in self.combos_hojas.items():
-            # Si es opcional, le agregamos una opción vacía ("") al principio de la lista
             if clave in OPTIONAL_SHEETS:
                 combo['values'] = [""] + self.hojas_disponibles
             else:
                 combo['values'] = self.hojas_disponibles
-                
+
             actual = self.sheet_vars[clave].get()
-            
-            # Si el valor actual no está en el archivo y no es un campo vacío intencional
+
             if actual not in self.hojas_disponibles and actual != "":
                 if clave in OPTIONAL_SHEETS:
                     self.sheet_vars[clave].set("")
@@ -798,6 +950,11 @@ class ConciliadorApp(tk.Tk):
 
         self.vista_previa.cargar_archivo(ruta, self.hojas_disponibles)
         self._refrescar_columnas_aud_comp()
+
+        self.combo_hoja_iva['values'] = self.hojas_disponibles
+        if self.hoja_iva_var.get() not in self.hojas_disponibles:
+            self.hoja_iva_var.set(self.hojas_disponibles[0] if self.hojas_disponibles else "")
+
         self._set_estado(f"Archivo cargado: {Path(ruta).name} ({len(self.hojas_disponibles)} hojas)")
 
     def _on_abrir_logs(self):
@@ -932,6 +1089,26 @@ class ConciliadorApp(tk.Tk):
                         "Error del sistema",
                         f"{payload}\n\nRevisa el log para más detalles:\n{LOG_FILE}"
                     )
+                elif tipo == "iva_log":
+                    self.lbl_estado_iva.configure(text=payload)
+                elif tipo == "iva_exito":
+                    self._finalizar_iva()
+                    t = payload["totales"]
+                    self.lbl_estado_iva.configure(text=f"IVA a pagar: {t['iva_a_pagar']:,.2f}")
+                    messagebox.showinfo(
+                        "Informe generado",
+                        f"El informe de IVA se generó correctamente en la hoja '{GeneradorInformeIVA.__module__}'."
+                        if False else
+                        "El informe de IVA se generó correctamente en la hoja 'Informe IVA'."
+                    )
+                elif tipo == "iva_error_usuario":
+                    self._finalizar_iva()
+                    self.lbl_estado_iva.configure(text=f"Error: {payload}")
+                    messagebox.showwarning("Datos incompletos", payload)
+                elif tipo == "iva_error_sistema":
+                    self._finalizar_iva()
+                    self.lbl_estado_iva.configure(text=f"Error: {payload}")
+                    messagebox.showerror("Error del sistema", payload)
         except queue.Empty:
             pass
         finally:

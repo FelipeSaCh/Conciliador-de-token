@@ -39,7 +39,7 @@ COLUMNAS_DIAN_VS_CONT = [
     'Nombre Emisor', 'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA','BASE_2', 'Total', 'Estado', 'Grupo'
 ]
 
-COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle','Sumas']
+COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle','Sumas','IVA','BASE']
 
 OUTPUT_SHEETS_TO_HIDE = ['Resultados', 'auditoria', 'resultados-auditoria']
 
@@ -52,5 +52,6 @@ PREVIEW_MAX_COLS = 60
 CATEGORY_COLORS = {
     "iva": "#EB6425",
     "base": "#16A34A",
-    "base2": "#9333EA",
+    "base2": "#33EAEA",
+    "autorretenedor": "#cc99ff",
 }
