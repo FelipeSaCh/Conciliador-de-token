@@ -6,6 +6,8 @@ from tkinter import filedialog, messagebox, ttk
 import os
 import pandas as pd
 from informes_iva import GeneradorInformeIVA
+import tempfile
+from PIL import Image, ImageTk
 
 from config import (
     APP_NAME,
@@ -19,8 +21,11 @@ from config import (
     CATEGORY_COLORS,
 )
 from errors import ErrorSistema, ErrorUsuario, logger
-from excel_engine import ConciliadorExcel
+from excel_engine import ConciliadorAuditoria
 from preview_widget import VistaPreviaExcel
+from informes_iva import GeneradorInformeIVA
+from token_engine import FormateadorToken
+
 
 
 PALETTE = {
@@ -97,6 +102,7 @@ class ScrollableChecklist(ttk.Frame):
 class ConciliadorApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        
         self.style_engine = ttk.Style(self)
         self.style_engine.theme_use("clam")
         self.configure(bg=PALETTE["bg"])
@@ -111,7 +117,11 @@ class ConciliadorApp(tk.Tk):
         self._cola_eventos = queue.Queue()
         self.hoja_iva_var = tk.StringVar()
         self._procesando_iva = False
+        self._procesando_token=False
         self._procesando = False
+        self._generador_iva=None
+        self._procesando_pdf_iva = False
+        self._procesando_iva=False
 
         self._setup_styles()
         self._build_ui()
@@ -133,7 +143,7 @@ class ConciliadorApp(tk.Tk):
     # ------------------------------------------------------------------ STYLES & UI SETUP
 
     def _on_liberar_archivo(self):
-        if self._procesando or self._procesando_iva:
+        if self._procesando or self._procesando_iva or self._procesando_token:
             messagebox.showwarning("Proceso en curso", "Espera a que finalice el proceso actual antes de liberar el archivo.")
             return
 
@@ -144,7 +154,14 @@ class ConciliadorApp(tk.Tk):
             combo['values'] = []
             self.sheet_vars[clave].set("" if clave in OPTIONAL_SHEETS else DEFAULT_SHEET_NAMES[clave])
 
+        for clave, combo in self.combos_token.items():
+            combo['values'] = []
+
+        if hasattr(self, "lbl_estado_token"):
+            self.lbl_estado_token.configure(text="")
+
         self._poblar_checklist_columnas([])
+        
 
         if hasattr(self, "combo_hoja_iva"):
             self.combo_hoja_iva['values'] = []
@@ -159,9 +176,17 @@ class ConciliadorApp(tk.Tk):
 
         import gc
         gc.collect()
+        # gui.py — _on_liberar_archivo (agregar dentro del método)
+        self._generador_iva = None
+        if hasattr(self, "btn_exportar_pdf"):
+            self.btn_exportar_pdf.configure(state="disabled")
+        if hasattr(self, "btn_vista_previa_pdf"):
+            self.btn_vista_previa_pdf.configure(state="disabled")
 
         self._set_estado("Sesión liberada. El archivo quedó disponible para otros programas.")
             
+# gui.py — reemplazar _on_generar_informe_iva y _generar_informe_iva_en_hilo
+
     def _on_generar_informe_iva(self):
         if self._procesando_iva:
             return
@@ -175,17 +200,22 @@ class ConciliadorApp(tk.Tk):
 
         self._procesando_iva = True
         self._set_btn_enabled(self.btn_generar_iva, False)
+        self.btn_exportar_pdf.configure(state="disabled")
+        self.btn_vista_previa_pdf.configure(state="disabled")
         self.lbl_estado_iva.configure(text="Generando informe...")
+
+        self._generador_iva = GeneradorInformeIVA(
+            self.file_path.get(), hoja, progress_callback=self._on_progreso_iva
+        )
 
         hilo = threading.Thread(
             target=self._generar_informe_iva_en_hilo,
-            args=(self.file_path.get(), hoja),
+            args=(self._generador_iva,),
             daemon=True
         )
         hilo.start()
 
-    def _generar_informe_iva_en_hilo(self, ruta, hoja):
-        generador = GeneradorInformeIVA(ruta, hoja, progress_callback=self._on_progreso_iva)
+    def _generar_informe_iva_en_hilo(self, generador):
         try:
             resumen = generador.generar()
             self._cola_eventos.put(("iva_exito", resumen))
@@ -205,6 +235,92 @@ class ConciliadorApp(tk.Tk):
     def _finalizar_iva(self):
         self._procesando_iva = False
         self._set_btn_enabled(self.btn_generar_iva, True)
+
+    # gui.py — nuevos métodos (agregar cerca de _finalizar_iva)
+    def _on_exportar_pdf_iva(self):
+            if self._procesando_pdf_iva:
+                return
+            if not self._generador_iva or self._generador_iva.df_filtrado is None:
+                messagebox.showwarning("Informe requerido", "Primero debes generar el informe de IVA.")
+                return
+
+            # Generar la ruta sugerida aplicando la lógica de Nombre Emisor + Informe de IVA + Periodo
+            cliente_nombre = ""
+            df_f = self._generador_iva.df_filtrado
+            if "Grupo" in df_f.columns and "Nombre Emisor" in df_f.columns:
+                df_emitidos = df_f[df_f["Grupo"].astype(str).str.strip() == "Emitido"]
+                if not df_emitidos.empty:
+                    val_emisor = df_emitidos["Nombre Emisor"].iloc[0]
+                    if pd.notna(val_emisor) and str(val_emisor).strip():
+                        cliente_nombre = str(val_emisor).strip() + " - "
+
+            periodo_limpio = self._generador_iva.periodo_texto.replace("PERÍODO:", "").strip() if self._generador_iva.periodo_texto else ""
+            sufijo_periodo = f" - {periodo_limpio}" if periodo_limpio else ""
+
+            nombre_sugerido = f"{cliente_nombre}INFORME DE IVA{sufijo_periodo}.pdf"
+            for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+                nombre_sugerido = nombre_sugerido.replace(char, '')
+
+            ruta_sugerida = Path(self._generador_iva.ruta_archivo).with_name(nombre_sugerido)
+
+            ruta_pdf = filedialog.asksaveasfilename(
+                title="Guardar informe de IVA en PDF",
+                defaultextension=".pdf",
+                initialfile=ruta_sugerida.name,
+                filetypes=[("Archivo PDF", "*.pdf")],
+            )
+            if not ruta_pdf:
+                return
+
+            self._procesando_pdf_iva = True
+            self.btn_exportar_pdf.configure(state="disabled")
+            self.lbl_estado_iva.configure(text="Generando PDF...")
+
+            hilo = threading.Thread(
+                target=self._exportar_pdf_iva_en_hilo,
+                args=(ruta_pdf,),
+                daemon=True
+            )
+            hilo.start()
+
+    def _exportar_pdf_iva_en_hilo(self, ruta_pdf):
+        try:
+            ruta_final = self._generador_iva.generar_pdf(ruta_pdf)
+            self._cola_eventos.put(("pdf_iva_exito", ruta_final))
+        except ErrorUsuario as e:
+            self._cola_eventos.put(("pdf_iva_error_usuario", str(e)))
+        except ErrorSistema as e:
+            self._cola_eventos.put(("pdf_iva_error_sistema", str(e)))
+        except Exception as e:
+            logger.exception("Error inesperado al exportar PDF de IVA")
+            self._cola_eventos.put(("pdf_iva_error_sistema", f"Error inesperado: {e}"))
+
+    def _finalizar_pdf_iva(self):
+        self._procesando_pdf_iva = False
+        self.btn_exportar_pdf.configure(state="normal")
+
+    def _on_vista_previa_pdf(self):
+        if not self._generador_iva or self._generador_iva.df_filtrado is None:
+            messagebox.showwarning("Informe requerido", "Primero debes generar el informe de IVA.")
+            return
+
+        try:
+            import pymupdf as fitzz  # noqa: F401
+        except ImportError:
+            messagebox.showerror(
+                "Dependencia faltante",
+                "No se encontró PyMuPDF. Instálalo con: pip install pymupdf"
+            )
+            return
+
+        ruta_temporal = Path(tempfile.gettempdir()) / "vista_previa_informe_iva.pdf"
+        try:
+            self._generador_iva.generar_pdf(str(ruta_temporal))
+        except (ErrorUsuario, ErrorSistema) as e:
+            messagebox.showerror("Error al generar vista previa", str(e))
+            return
+
+        VentanaVistaPreviaPDF(self, str(ruta_temporal))
 
     def _setup_styles(self):
         self.style = self.style_engine
@@ -692,7 +808,7 @@ class ConciliadorApp(tk.Tk):
             return
 
         try:
-            df = ConciliadorExcel._cargar_hoja_con_encabezado_variable(ruta, hoja)
+            df = ConciliadorAuditoria._cargar_hoja_con_encabezado_variable(ruta, hoja)
         except Exception as e:
             logger.warning(f"No se pudieron leer las columnas de AUD-COMP: {e}")
             self._poblar_checklist_columnas([])
@@ -810,6 +926,109 @@ class ConciliadorApp(tk.Tk):
             style="CardHeader.TLabel"
         ).pack(anchor="w", pady=(0, 16))
 
+        card = self._card(wrapper, fill=tk.X, pady=(0, 16))
+
+        ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            card,
+            text="Selecciona la hoja de Token y, si aplica, Contabilidad y Terceros para asignar Concepto y Tercero.",
+            style="SubheaderCard.TLabel"
+        ).pack(anchor="w", pady=(4, 16))
+
+        grid_frame = ttk.Frame(card, style="Card.TFrame")
+        grid_frame.pack(fill=tk.X, anchor="n")
+
+        self.combos_token = {}
+        for i, clave in enumerate(("principal", "contabilidad", "terceros")):
+            etiqueta = SHEET_LABELS[clave]
+            es_opcional = clave in OPTIONAL_SHEETS
+            lbl_texto = f"{etiqueta}" if es_opcional else f"{etiqueta}  *"
+            estilo_lbl = "FieldLabelOptional.TLabel" if es_opcional else "FieldLabel.TLabel"
+
+            ttk.Label(grid_frame, text=lbl_texto, style=estilo_lbl).grid(row=i, column=0, sticky="w", pady=9, padx=(0, 24))
+
+            combo = ttk.Combobox(
+                grid_frame,
+                textvariable=self.sheet_vars[clave],
+                width=45,
+                state="readonly",
+                cursor="hand2"
+            )
+            combo.grid(row=i, column=1, sticky="ew", pady=9)
+            self.combos_token[clave] = combo
+
+        grid_frame.columnconfigure(1, weight=1)
+
+        fila_accion = ttk.Frame(card, style="Card.TFrame")
+        fila_accion.pack(fill=tk.X, pady=(20, 0))
+
+        self.btn_formatear_token = self._btn_primary(fila_accion, "🧾  Formatear Token", self._on_formatear_token)
+        self.btn_formatear_token.pack(side=tk.LEFT)
+
+        self.lbl_estado_token = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
+        self.lbl_estado_token.pack(side=tk.LEFT, padx=(16, 0))
+
+    def _on_formatear_token(self):
+        if self._procesando_token:
+            return
+        if not self.file_path.get():
+            messagebox.showwarning("Archivo requerido", "Primero debes seleccionar un archivo de Excel.")
+            return
+
+        nombre_principal = self.sheet_vars["principal"].get().strip()
+        if not nombre_principal:
+            messagebox.showwarning("Hoja requerida", "Debes indicar la hoja de Token.")
+            return
+        if nombre_principal not in self.hojas_disponibles:
+            messagebox.showwarning("Hoja inválida", f"La hoja '{nombre_principal}' no existe en el archivo.")
+            return
+
+        respuesta = messagebox.askyesno(
+            "Confirmar formateo",
+            "Este proceso modificará la hoja de Token en el archivo seleccionado. ¿Deseas continuar?"
+        )
+        if not respuesta:
+            return
+
+        self._procesando_token = True
+        self._set_btn_enabled(self.btn_formatear_token, False)
+        self.lbl_estado_token.configure(text="Formateando...")
+
+        sheet_names = {
+            "principal": nombre_principal,
+            "contabilidad": self.sheet_vars["contabilidad"].get().strip(),
+            "terceros": self.sheet_vars["terceros"].get().strip(),
+        }
+
+        hilo = threading.Thread(
+            target=self._formatear_token_en_hilo,
+            args=(self.file_path.get(), sheet_names),
+            daemon=True
+        )
+        hilo.start()
+
+    def _formatear_token_en_hilo(self, ruta, sheet_names):
+        formateador = FormateadorToken(ruta, sheet_names, progress_callback=self._on_progreso_token)
+        try:
+            resumen = formateador.ejecutar()
+            self._cola_eventos.put(("token_exito", resumen))
+        except ErrorUsuario as e:
+            logger.warning(f"Error de usuario al formatear token: {e}")
+            self._cola_eventos.put(("token_error_usuario", str(e)))
+        except ErrorSistema as e:
+            logger.error(f"Error de sistema al formatear token: {e}")
+            self._cola_eventos.put(("token_error_sistema", str(e)))
+        except Exception as e:
+            logger.exception("Error inesperado al formatear token")
+            self._cola_eventos.put(("token_error_sistema", f"Error inesperado: {e}"))
+
+    def _on_progreso_token(self, mensaje):
+        self._cola_eventos.put(("token_log", mensaje))
+
+    def _finalizar_token(self):
+        self._procesando_token = False
+        self._set_btn_enabled(self.btn_formatear_token, True)
+
 
     def _build_tab_reportes_iva(self):
         wrapper = ttk.Frame(self.tab_reportes_iva, padding=(4, 16, 4, 4), style="TFrame")
@@ -852,6 +1071,21 @@ class ConciliadorApp(tk.Tk):
 
         self.lbl_estado_iva = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
         self.lbl_estado_iva.pack(side=tk.LEFT, padx=(16, 0))
+
+        fila_pdf = ttk.Frame(card, style="Card.TFrame")
+        fila_pdf.pack(fill=tk.X, pady=(12, 0))
+
+        self.btn_exportar_pdf = ttk.Button(
+            fila_pdf, text="📄  Exportar a PDF", style="Secondary.TButton",
+            command=self._on_exportar_pdf_iva, cursor="hand2", state="disabled"
+        )
+        self.btn_exportar_pdf.pack(side=tk.LEFT)
+
+        self.btn_vista_previa_pdf = ttk.Button(
+            fila_pdf, text="👁  Vista previa PDF", style="Secondary.TButton",
+            command=self._on_vista_previa_pdf, cursor="hand2", state="disabled"
+        )
+        self.btn_vista_previa_pdf.pack(side=tk.LEFT, padx=(10, 0))
 
     def _build_tab_ejecucion(self):
         contenedor = ttk.Frame(self.tab_ejecucion, padding=(4, 16, 4, 4), style="TFrame")
@@ -948,8 +1182,13 @@ class ConciliadorApp(tk.Tk):
                 elif self.hojas_disponibles:
                     self.sheet_vars[clave].set(self.hojas_disponibles[0])
 
+        for clave, combo in self.combos_token.items():
+            if clave in OPTIONAL_SHEETS:
+                combo['values'] = [""] + self.hojas_disponibles
+            else:
+                combo['values'] = self.hojas_disponibles
+
         self.vista_previa.cargar_archivo(ruta, self.hojas_disponibles)
-        self._refrescar_columnas_aud_comp()
 
         self.combo_hoja_iva['values'] = self.hojas_disponibles
         if self.hoja_iva_var.get() not in self.hojas_disponibles:
@@ -1040,7 +1279,7 @@ class ConciliadorApp(tk.Tk):
         hilo.start()
 
     def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2):
-        conciliador = ConciliadorExcel(
+        conciliador = ConciliadorAuditoria(
             ruta,
             sheet_names,
             seriales_iva=seriales_iva,
@@ -1067,7 +1306,13 @@ class ConciliadorApp(tk.Tk):
     def _procesar_cola(self):
         try:
             while True:
-                tipo, payload = self._cola_eventos.get_nowait()
+                # Agrega este bloque try-except interno
+                try:
+                    tipo, payload = self._cola_eventos.get_nowait()
+                except queue.Empty:
+                    break  # Salimos del bucle while porque la cola ya está vacía
+
+                # A partir de aquí mantienes tu lógica original intacta
                 if tipo == "log":
                     self._agregar_log(payload)
                 elif tipo == "exito":
@@ -1089,18 +1334,37 @@ class ConciliadorApp(tk.Tk):
                         "Error del sistema",
                         f"{payload}\n\nRevisa el log para más detalles:\n{LOG_FILE}"
                     )
+                elif tipo == "token_log":
+                    self.lbl_estado_token.configure(text=payload)
+                elif tipo == "token_exito":
+                    self._finalizar_token()
+                    self.lbl_estado_token.configure(
+                        text=f"Filas: {payload['filas_procesadas']} | Personales: {payload['filas_personales']}"
+                    )
+                    if self.file_path.get():
+                        self.vista_previa.cargar_archivo(self.file_path.get(), self.hojas_disponibles)
+                    messagebox.showinfo("Token formateado", "La hoja de Token se formateó correctamente.")
+                elif tipo == "token_error_usuario":
+                    self._finalizar_token()
+                    self.lbl_estado_token.configure(text=f"Error: {payload}")
+                    messagebox.showwarning("Datos incompletos", payload)
+                elif tipo == "token_error_sistema":
+                    self._finalizar_token()
+                    self.lbl_estado_token.configure(text=f"Error: {payload}")
+                    messagebox.showerror("Error del sistema", payload)
                 elif tipo == "iva_log":
                     self.lbl_estado_iva.configure(text=payload)
                 elif tipo == "iva_exito":
                     self._finalizar_iva()
                     t = payload["totales"]
                     self.lbl_estado_iva.configure(text=f"IVA a pagar: {t['iva_a_pagar']:,.2f}")
+                    self.btn_exportar_pdf.configure(state="normal")
+                    self.btn_vista_previa_pdf.configure(state="normal")
                     messagebox.showinfo(
                         "Informe generado",
-                        f"El informe de IVA se generó correctamente en la hoja '{GeneradorInformeIVA.__module__}'."
-                        if False else
                         "El informe de IVA se generó correctamente en la hoja 'Informe IVA'."
                     )
+
                 elif tipo == "iva_error_usuario":
                     self._finalizar_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
@@ -1109,11 +1373,21 @@ class ConciliadorApp(tk.Tk):
                     self._finalizar_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
                     messagebox.showerror("Error del sistema", payload)
-        except queue.Empty:
+                elif tipo == "pdf_iva_exito":
+                    self._finalizar_pdf_iva()
+                    self.lbl_estado_iva.configure(text=f"PDF exportado: {Path(payload).name}")
+                    messagebox.showinfo("PDF generado", f"El informe se exportó correctamente en:\n{payload}")
+                elif tipo == "pdf_iva_error_usuario":
+                    self._finalizar_pdf_iva()
+                    self.lbl_estado_iva.configure(text=f"Error: {payload}")
+                    messagebox.showwarning("Datos incompletos", payload)
+                elif tipo == "pdf_iva_error_sistema":
+                    self._finalizar_pdf_iva()
+                    self.lbl_estado_iva.configure(text=f"Error: {payload}")
+                    messagebox.showerror("Error del sistema", payload)
             pass
         finally:
             self.after(300, self._procesar_cola)
-
     def _finalizar_ejecucion(self, exito=True):
         self._procesando = False
         self._set_btn_enabled(self.btn_ejecutar, True)
@@ -1136,3 +1410,127 @@ class ConciliadorApp(tk.Tk):
 
     def _set_estado(self, mensaje):
         self.lbl_estado.configure(text=f" {mensaje}")
+
+# gui.py — nueva clase (agregar antes de class ConciliadorApp)
+
+class VentanaVistaPreviaPDF(tk.Toplevel):
+    def __init__(self, parent, ruta_pdf):
+        super().__init__(parent)
+        self.title("Vista previa - Informe de IVA")
+        self.geometry("980x760")
+        self.configure(bg=PALETTE["bg"])
+        self.ruta_pdf = ruta_pdf
+        self.pagina_actual = 0
+        self._imagen_tk = None
+        self.set_app_icon()
+
+        import pymupdf as fitz
+        self._fitz = fitz
+        self.documento = fitz.open(ruta_pdf)
+
+        barra = ttk.Frame(self, style="TFrame", padding=10)
+        barra.pack(fill=tk.X)
+
+        self.btn_anterior = ttk.Button(
+            barra, text="◀ Anterior", style="Secondary.TButton",
+            command=self._pagina_anterior, cursor="hand2"
+        )
+        self.btn_anterior.pack(side=tk.LEFT)
+
+        self.lbl_pagina = ttk.Label(barra, text="", style="Subheader.TLabel")
+        self.lbl_pagina.pack(side=tk.LEFT, padx=12)
+
+        self.btn_siguiente = ttk.Button(
+            barra, text="Siguiente ▶", style="Secondary.TButton",
+            command=self._pagina_siguiente, cursor="hand2"
+        )
+        self.btn_siguiente.pack(side=tk.LEFT)
+
+        btn_abrir = ttk.Button(
+            barra, text="🗖  Abrir con visor predeterminado", style="Secondary.TButton",
+            command=self._abrir_externo, cursor="hand2"
+        )
+        btn_abrir.pack(side=tk.RIGHT)
+
+        contenedor = tk.Frame(self, bg=PALETTE["surface_alt"])
+        contenedor.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(contenedor, bg=PALETTE["surface_alt"], highlightthickness=0)
+        scrollbar_y = ttk.Scrollbar(contenedor, orient="vertical", command=self.canvas.yview)
+        scrollbar_x = ttk.Scrollbar(contenedor, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
+
+        self.protocol("WM_DELETE_WINDOW", self._cerrar)
+        self._mostrar_pagina()
+
+
+    def set_app_icon(self):
+        icon_path = Path(__file__).resolve().parent
+        icon_path = icon_path / "assets" / "icon.ico"
+
+        if icon_path.exists():
+            try:
+                self.iconbitmap(icon_path)
+            except Exception as e:
+                logger.error(f"Error al establecer el icono de la aplicación: {e}")
+        else:
+                logger.info("Icono de la aplicación establecido correctamente.")
+
+    def _mostrar_pagina(self):
+        pagina = self.documento[self.pagina_actual]
+        matriz = self._fitz.Matrix(1.6, 1.6)
+        pixmap = pagina.get_pixmap(matrix=matriz)
+        modo = "RGBA" if pixmap.alpha else "RGB"
+        imagen = Image.frombytes(modo, [pixmap.width, pixmap.height], pixmap.samples)
+        self._imagen_tk = ImageTk.PhotoImage(imagen)
+
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self._imagen_tk)
+        self.canvas.configure(scrollregion=(0, 0, pixmap.width, pixmap.height))
+
+        self.lbl_pagina.configure(text=f"Página {self.pagina_actual + 1} de {len(self.documento)}")
+        self.btn_anterior.configure(state="normal" if self.pagina_actual > 0 else "disabled")
+        self.btn_siguiente.configure(
+            state="normal" if self.pagina_actual < len(self.documento) - 1 else "disabled"
+        )
+
+    def _pagina_anterior(self):
+        if self.pagina_actual > 0:
+            self.pagina_actual -= 1
+            self._mostrar_pagina()
+
+    def _pagina_siguiente(self):
+        if self.pagina_actual < len(self.documento) - 1:
+            self.pagina_actual += 1
+            self._mostrar_pagina()
+
+    def _on_wheel(self, event):
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        w = widget
+        while w is not None and w is not self:
+            w = w.master
+        if w is not self:
+            return
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
+
+    def _abrir_externo(self):
+        try:
+            if os.name == "nt":
+                os.startfile(self.ruta_pdf)
+            else:
+                import subprocess
+                import sys
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", self.ruta_pdf])
+        except Exception:
+            messagebox.showinfo("Abrir PDF", f"El archivo se encuentra en:\n{self.ruta_pdf}")
+
+    def _cerrar(self):
+        self.documento.close()
+        self.canvas.unbind_all("<MouseWheel>")
+        self.destroy()
