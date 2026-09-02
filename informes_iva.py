@@ -64,54 +64,66 @@ class GeneradorInformeIVA:
         self.progress_callback(mensaje)
 
     def generar(self):
-        self._log(f"Leyendo hoja de token: {self.hoja_token}")
-        df = self._cargar_hoja(self.ruta_archivo, self.hoja_token)
+            self._log(f"Leyendo hoja de token: {self.hoja_token}")
+            df = self._cargar_hoja(self.ruta_archivo, self.hoja_token)
 
-        for col in (COLUMNA_GRUPO, COLUMNA_TIPO_DOC, COLUMNA_IVA):
-            if col not in df.columns:
-                raise ErrorUsuario(
-                    f"La hoja '{self.hoja_token}' no contiene la columna requerida '{col}'."
-                )
+            for col in (COLUMNA_GRUPO, COLUMNA_TIPO_DOC, COLUMNA_IVA):
+                if col not in df.columns:
+                    raise ErrorUsuario(
+                        f"La hoja '{self.hoja_token}' no contiene la columna requerida '{col}'."
+                    )
 
-        df[COLUMNA_GRUPO] = df[COLUMNA_GRUPO].astype(str).str.strip()
-        df[COLUMNA_TIPO_DOC] = df[COLUMNA_TIPO_DOC].astype(str).str.strip()
-        df[COLUMNA_IVA] = (
-            pd.to_numeric(df[COLUMNA_IVA], errors="coerce").fillna(0)
-        )
-
-        df_filtrado = df[
-            df[COLUMNA_TIPO_DOC].isin(TIPOS_DOC_VALIDOS)
-            & df[COLUMNA_GRUPO].isin(GRUPOS_VALIDOS)
-        ].copy()
-
-        if df_filtrado.empty:
-            raise ErrorUsuario(
-                "No se encontraron registros que cumplan con los criterios de Grupo "
-                "y Tipo de documento indicados."
+            df[COLUMNA_GRUPO] = df[COLUMNA_GRUPO].astype(str).str.strip()
+            df[COLUMNA_TIPO_DOC] = df[COLUMNA_TIPO_DOC].astype(str).str.strip()
+            df[COLUMNA_IVA] = (
+                pd.to_numeric(df[COLUMNA_IVA], errors="coerce").fillna(0)
             )
 
-        self._log(f"Registros filtrados: {len(df_filtrado)}")
+            # Construir la condición base de filtrado
+            condicion_filtro = (
+                df[COLUMNA_TIPO_DOC].isin(TIPOS_DOC_VALIDOS)
+                & df[COLUMNA_GRUPO].isin(GRUPOS_VALIDOS)
+            )
 
-        df_filtrado["Signo"] = df_filtrado.apply(self._calcular_signo, axis=1)
-        df_filtrado["IVA Ajustado"] = (
-            df_filtrado[COLUMNA_IVA] * df_filtrado["Signo"]
-        )
+            # NUEVO: Excluir los registros donde CONCEPTO indique "PERSONALES"
+            if "CONCEPTO" in df.columns:
+                # Usamos upper() y strip() para evitar problemas con espacios o minúsculas/mayúsculas
+                mascara_personales = df["CONCEPTO"].astype(str).str.strip().str.upper() == "PERSONALES"
+                condicion_filtro = condicion_filtro & ~mascara_personales
+                
+                registros_omitidos = mascara_personales.sum()
+                if registros_omitidos > 0:
+                    self._log(f"Se ignoraron {registros_omitidos} registro(s) por tener el concepto 'PERSONALES'.")
 
-        # Determinar el período analizando las fechas de emisión
-        periodo_texto = self._obtener_texto_periodo(df)
+            df_filtrado = df[condicion_filtro].copy()
 
-        resumen = self._construir_resumen(df_filtrado)
+            if df_filtrado.empty:
+                raise ErrorUsuario(
+                    "No se encontraron registros que cumplan con los criterios indicados, "
+                    "o todos fueron filtrados/excluidos."
+                )
 
-# informes_iva.py — generar() (reemplazar bloque final)
-        self.df_filtrado = df_filtrado
-        self.resumen = resumen
-        self.periodo_texto = periodo_texto
+            self._log(f"Registros filtrados: {len(df_filtrado)}")
 
-        self._log("Escribiendo informe en el archivo de Excel...")
-        self._escribir_informe(df_filtrado, resumen, periodo_texto)
+            df_filtrado["Signo"] = df_filtrado.apply(self._calcular_signo, axis=1)
+            df_filtrado["IVA Ajustado"] = (
+                df_filtrado[COLUMNA_IVA] * df_filtrado["Signo"]
+            )
 
-        self._log("Informe de IVA generado correctamente.")
-        return resumen
+            # Determinar el período analizando las fechas de emisión
+            periodo_texto = self._obtener_texto_periodo(df)
+
+            resumen = self._construir_resumen(df_filtrado)
+
+            self.df_filtrado = df_filtrado
+            self.resumen = resumen
+            self.periodo_texto = periodo_texto
+
+            self._log("Escribiendo informe en el archivo de Excel...")
+            self._escribir_informe(df_filtrado, resumen, periodo_texto)
+
+            self._log("Informe de IVA generado correctamente.")
+            return resumen
 
     @staticmethod
     def _obtener_texto_periodo(df):
@@ -295,8 +307,8 @@ class GeneradorInformeIVA:
             datos_resumen = [[Paragraph(h, estilo_encabezado_resumen) for h in encabezados_resumen]]
 
             nombres_conceptos = {
-                "Emitido": "IVA DEVOLUCION DE VENTAS",
-                "Recibido": "IVA DEVOLUCION DE COMPRAS",
+                "Emitido": "IVA DESCONTABLE",
+                "Recibido": "IVA GENERADO",
             }
             for grupo in ("Emitido", "Recibido"):
                 d = self.resumen["grupos"][grupo]
@@ -309,7 +321,7 @@ class GeneradorInformeIVA:
 
             t = self.resumen["totales"]
             datos_resumen.append([
-                Paragraph("<b>IVA GENERADO</b>", estilo_celda_resumen),
+                Paragraph("<b>TOTAL</b>", estilo_celda_resumen),
                 "", "",
                 Paragraph(f"<b>{self._fmt(t['iva_a_pagar'])}</b>", estilo_celda_resumen_num),
             ])

@@ -11,7 +11,8 @@ from errors import ColumnaFaltanteError, ErrorSistema, ErrorUsuario, HojaNoEncon
 
 
 class FormateadorToken:
-    COLUMNAS_REQUERIDAS_PRINCIPAL = ['NIT Emisor', 'Prefijo', 'Folio', 'Total', 'IVA']
+    # Se añaden NIT Receptor y Grupo como requeridos para poder hacer la lógica condicional
+    COLUMNAS_REQUERIDAS_PRINCIPAL = ['NIT Emisor', 'NIT Receptor', 'Grupo', 'Prefijo', 'Folio', 'Total', 'IVA']
     COLUMNAS_REQUERIDAS_CONTA = ['NIT']
     COLUMNAS_REQUERIDAS_TERCEROS = ['NIT']
 
@@ -28,6 +29,36 @@ class FormateadorToken:
     def _limpiar_encabezados(df, mayus=False):
         cols = df.columns.astype(str).str.replace(r'[\r\n\t]', '', regex=True).str.strip()
         df.columns = cols.str.upper() if mayus else cols
+        return df
+
+    @staticmethod
+    def _leer_hoja_dinamica(file_path, sheet_name, keyword="NIT"):
+        """
+        Lee una hoja de Excel buscando dinámicamente en qué fila están los encabezados,
+        basándose en la búsqueda de una columna clave.
+        """
+        # Leemos el excel sin asignar encabezado (header=None)
+        df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+        
+        header_idx = 0
+        keyword_upper = keyword.upper()
+        
+        # Buscamos en las primeras 50 filas (por eficiencia)
+        for idx in range(min(50, len(df))):
+            # Limpiamos los valores de la fila actual para la comparación exacta
+            fila_limpia = df.iloc[idx].astype(str).str.strip().str.upper()
+            
+            # Comprobamos si la palabra clave (ej. "NIT") existe en esta fila
+            if keyword_upper in fila_limpia.values:
+                header_idx = idx
+                break
+                
+        # Asignamos la fila encontrada como los encabezados de las columnas
+        df.columns = df.iloc[header_idx]
+        
+        # Nos quedamos solo con los datos reales (lo que está debajo del encabezado)
+        df = df.iloc[header_idx + 1:].reset_index(drop=True)
+        
         return df
 
     def _validar_columnas(self, df, columnas_requeridas, nombre_hoja):
@@ -70,18 +101,25 @@ class FormateadorToken:
                 self.COLUMNAS_REQUERIDAS_PRINCIPAL,
                 nombre_principal,
             )
+            
+            # Guardamos las columnas originales exactas (sin contar las que calculamos nosotros)
+            # Para garantizar la sobrescritura y no duplicarlas al exportar
+            COLUMNAS_CALCULADAS = ["CONCEPTO", "TERCERO", "TIPO", "TIPO-DETALLE", "BASE", "Num.Ext"]
+            cols_originales = [c for c in df_principal.columns if c not in COLUMNAS_CALCULADAS]
+            
         except Exception as e:
             raise ErrorSistema(
                 f"Error leyendo la hoja principal: {e}"
             ) from e
 
+# -------------- CARGA DE CONTABILIDAD --------------
         nombre_conta = self.sheet_names.get("contabilidad")
         if nombre_conta and nombre_conta in hojas_excel:
             try:
-                df_conta = pd.read_excel(
-                    self.file_path, sheet_name=nombre_conta
-                )
+                # Usamos el lector dinámico buscando la columna 'NIT'
+                df_conta = self._leer_hoja_dinamica(self.file_path, nombre_conta, keyword="NIT")
                 df_conta = self._limpiar_encabezados(df_conta, mayus=True)
+                
                 self._validar_columnas(
                     df_conta, self.COLUMNAS_REQUERIDAS_CONTA, nombre_conta
                 )
@@ -93,13 +131,14 @@ class FormateadorToken:
         else:
             df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
 
+        # -------------- CARGA DE TERCEROS --------------
         nombre_tercer = self.sheet_names.get("terceros")
         if nombre_tercer and nombre_tercer in hojas_excel:
             try:
-                df_tercer = pd.read_excel(
-                    self.file_path, sheet_name=nombre_tercer
-                )
+                # Usamos el lector dinámico buscando la columna 'NIT'
+                df_tercer = self._leer_hoja_dinamica(self.file_path, nombre_tercer, keyword="NIT")
                 df_tercer = self._limpiar_encabezados(df_tercer, mayus=True)
+                
                 self._validar_columnas(
                     df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, nombre_tercer
                 )
@@ -122,19 +161,7 @@ class FormateadorToken:
         self._reportar(
             "Ordenando registros por Grupo, Tipo de Documento y Personales..."
         )
-        COLUMNAS_CALCULADAS = [
-            "CONCEPTO",
-            "TERCERO",
-            "TIPO",
-            "TIPO-DETALLE",
-            "BASE",
-            "Num.Ext",
-        ]
-        cols_originales = [
-            c
-            for c in df_principal.columns
-            if c not in ("NIT_Emisor_clean", *COLUMNAS_CALCULADAS)
-        ]
+        
         cols_export = cols_originales + COLUMNAS_CALCULADAS
         df_export = df_full[cols_export].copy()
 
@@ -197,30 +224,53 @@ class FormateadorToken:
             )
             condiciones_doc = [
                 doc_clean.str.contains("FACTURA ELECTRÓNICA|FACTURA ELECTRONICA"),
+                doc_clean.str.contains("DOCUMENTO EQUIVALENTE"),
                 doc_clean.str.contains("APPLICATION RESPONSE"),
             ]
-            # Factura = 0, Application Response = 2, Cualquier otro tipo = 1 (Queda en medio)
-            df["_ORDEN_DOC"] = np.select(condiciones_doc, [0, 2], default=1)
+            # Factura = 0, Doc Equivalente = 1, Application Response = 2, Cualquier otro tipo = 3 (Abajo)
+            df["_ORDEN_DOC"] = np.select(condiciones_doc, [0, 1, 2], default=3)
         else:
             df["_ORDEN_DOC"] = 0
 
         # 3. Aplicar ordenamiento estable
+        # CAMBIO CLAVE: Primero ordena por Grupo (_ORDEN_GRUPO), luego envía los personales al final de cada grupo (_ES_PERSONAL)
+        sort_cols = ["_ORDEN_GRUPO", "_ES_PERSONAL", "_ORDEN_DOC"]
+        ascending_flags = [True, True, True]
+        
+        if col_tipo_doc:
+            sort_cols.append(col_tipo_doc)
+            ascending_flags.append(True)
+
         df = df.sort_values(
-            by=["_ES_PERSONAL", "_ORDEN_GRUPO", "_ORDEN_DOC"],
-            ascending=[True, True, True],
+            by=sort_cols,
+            ascending=ascending_flags,
             kind="stable",
         ).reset_index(drop=True)
 
         # Limpiar columnas auxiliares
         return df.drop(columns=["_ORDEN_GRUPO", "_ORDEN_DOC"])
+
     def _cruzar_datos(self, df_principal, df_conta, df_tercer):
         df_principal = df_principal.copy()
         df_conta = df_conta.copy()
         df_tercer = df_tercer.copy()
 
-        df_principal['NIT_Emisor_clean'] = (
+        # --- VERDADERA SOBRESCRITURA ---
+        # Si estas columnas ya existen en la hoja original, las borramos antes de cruzar
+        # para que Pandas las recalcule limpiamente sin crear "CONCEPTO_x" o "CONCEPTO_y".
+        cols_a_sobrescribir = ['CONCEPTO', 'TERCERO', 'TIPO', 'TIPO-DETALLE', 'NIT_Cruce']
+        df_principal = df_principal.drop(columns=[c for c in cols_a_sobrescribir if c in df_principal.columns], errors='ignore')
+
+        # --- LÓGICA CONDICIONAL DE NIT (Emitido vs Recibido) ---
+        grupo_clean = df_principal['Grupo'].fillna('').astype(str).str.strip().str.upper()
+        
+        # Evaluamos el Grupo: Si es EMITIDO toma el Receptor, si no, toma el Emisor.
+        df_principal['NIT_Cruce'] = np.where(
+            grupo_clean == 'EMITIDO',
+            df_principal['NIT Receptor'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip(),
             df_principal['NIT Emisor'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         )
+
         df_conta['NIT_clean'] = (
             df_conta['NIT'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
         )
@@ -236,9 +286,10 @@ class FormateadorToken:
         if 'TIPO' in df_conta_unica.columns:
             cols_a_traer.append('TIPO')
 
+        # --- CRUCE (Verdadera búsqueda usando NIT_Cruce) ---
         df = df_principal.merge(
             df_conta_unica[cols_a_traer],
-            left_on='NIT_Emisor_clean',
+            left_on='NIT_Cruce',
             right_on='NIT_clean',
             how='left'
         )
@@ -257,8 +308,10 @@ class FormateadorToken:
         )
 
         nits_terceros_unicos = set(df_tercer['NIT_clean'].unique())
+        
+        # Validamos Terceros basados en el NIT_Cruce también
         df['TERCERO'] = np.where(
-            df['NIT_Emisor_clean'].isin(nits_terceros_unicos) & (df['NIT_Emisor_clean'] != ''),
+            df['NIT_Cruce'].isin(nits_terceros_unicos) & (df['NIT_Cruce'] != ''),
             'CREADO',
             'NO CREADO'
         )

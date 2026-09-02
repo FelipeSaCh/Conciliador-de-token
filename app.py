@@ -572,18 +572,21 @@ class ConciliadorApp(tk.Tk):
         self.tab_ejecucion = ttk.Frame(self.notebook, style="TFrame")
         self.tab_reportes_iva=ttk.Frame(self.notebook, style="TFrame")
         self.tab_token=ttk.Frame(self.notebook, style="TFrame")
+        self.tab_pivote_movimientos=ttk.Frame(self.notebook, style="TFrame")
 
         self.notebook.add(self.tab_token, text=" 🧾  Formatear Token  ")
         self.notebook.add(self.tab_config, text="  ⚙  Configuración para auditoria  ")
         self.notebook.add(self.tab_reportes_iva, text="  📊  Reportes IVA  ")
         self.notebook.add(self.tab_preview, text="  👁  Vista Previa  ")
         self.notebook.add(self.tab_ejecucion, text="  ▶  Ejecución y Logs  ")
+        self.notebook.add(self.tab_pivote_movimientos,text=" ⇆ Reestructurar columnas de movimientos ")
         
         self._build_tab_config()
         self._build_tab_preview()
         self._build_tab_ejecucion()
         self._build_tab_reportes_iva()
         self._build_tab_token()
+        self._build_tab_pivotar()
 
         self._build_barra_estado()
 
@@ -915,6 +918,25 @@ class ConciliadorApp(tk.Tk):
     def _build_tab_preview(self):
         self.vista_previa = VistaPreviaExcel(self.tab_preview)
         self.vista_previa.pack(fill=tk.BOTH, expand=True, padx=4, pady=(16, 4))
+
+    def _build_tab_pivotar(self):
+        wrapper=ttk.Frame(self.tab_pivote_movimientos, padding=(4,16,4,4), style="TFrame")
+        wrapper.pack(fill=tk.BOTH,expand=True)
+
+        ttk.Label(
+            wrapper,
+            text="Formatear movimientos",
+            style="CardHeader.TLabel"
+        ).pack(anchor="w",pady=(0,16))
+
+        card=self._card(wrapper,fill=tk.X,pady=(0,16))
+        ttk.Label(card,text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(
+            card,
+            text="Selelecciona la hoja de movmientos",
+            style="SubheaderCard.TLabel"
+        ).pack(anchor="w", pady=(0,16))
+
 
     def _build_tab_token(self):
         wrapper = ttk.Frame(self.tab_token, padding=(4, 16, 4, 4), style="TFrame")

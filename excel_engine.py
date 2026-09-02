@@ -258,9 +258,11 @@ class ConciliadorAuditoria:
         suma_base = (base_num + base_num.shift(1)).round(2)
         suma_iva = (iva_num + iva_num.shift(1)).round(2)
 
-        base_diff = suma_base != 0
-        iva_diff = suma_iva != 0
 
+
+        UMBRAL_TOLERANCIA=5.0
+        base_diff = suma_base.abs() > UMBRAL_TOLERANCIA
+        iva_diff = suma_iva.abs() > UMBRAL_TOLERANCIA
         df_unificado['Diff_BASE'] = es_pareja & es_cont & base_diff
         df_unificado['Diff_IVA'] = es_pareja & es_cont & iva_diff
 
@@ -293,7 +295,7 @@ class ConciliadorAuditoria:
                 sheet_auditoria = writer.sheets['auditoria']
                 sheet_dian_vs_cont = writer.sheets['DIAN VS CONT']
 
-                # --- INYECCIÓN Y ORDENAMIENTO EN HOJA ORIGINAL AUD-COMP ---
+               # --- INYECCIÓN Y ORDENAMIENTO EN HOJA ORIGINAL AUD-COMP ---
                 sheet_aud_comp_orig = wb[nombre_aud_comp]
                 header_row = 0
                 col_tercero = 0
@@ -312,6 +314,20 @@ class ConciliadorAuditoria:
                         break
 
                 if header_row > 0 and col_tercero > 0:
+                    # --- NUEVO: ELIMINAR COLUMNAS PREVIAMENTE INYECTADAS PARA EVITAR DUPLICADOS ---
+                    # Revisamos cuántas de nuestras columnas personalizadas existen inmediatamente después de TERCERO
+                    num_injected_found = 0
+                    for i in range(1, 5):
+                        val = str(sheet_aud_comp_orig.cell(row=header_row, column=col_tercero + i).value).strip().upper()
+                        if val in ['AUTORRETENCION', 'BASE', 'BASE_2', 'IVA']:
+                            num_injected_found += 1
+                        else:
+                            break
+                    
+                    if num_injected_found > 0:
+                        sheet_aud_comp_orig.delete_cols(col_tercero + 1, amount=num_injected_found)
+                    # --------------------------------------------------------------------------------
+                    
                     dict_auto = {}
                     col_nit_auto = next((c for c in df_autoretenedores.columns if 'NIT' in str(c).upper()), None)
                     col_coment_auto = next((c for c in df_autoretenedores.columns if 'COMENT' in str(c).upper()), None)
@@ -329,7 +345,7 @@ class ConciliadorAuditoria:
 
                     for idx, excel_row_idx in enumerate(range(header_row + 1, max_row_orig + 1)):
                         cell_values = [sheet_aud_comp_orig.cell(row=excel_row_idx, column=c).value for c in range(1, max_col_orig + 1)]
-                        calc_data = df_res_records[idx] if idx < len(df_res_records) else {'BASE': 0, 'IVA': 0}
+                        calc_data = df_res_records[idx] if idx < len(df_res_records) else {'BASE': 0, 'BASE_2': 0, 'IVA': 0}
 
                         nit_val = str(cell_values[col_nit - 1]).replace('.0', '').strip() if col_nit > 0 else ''
                         comentario_auto = dict_auto.get(nit_val, '')
@@ -340,21 +356,29 @@ class ConciliadorAuditoria:
                         row_data_list.append({
                             'original_values': cell_values,
                             'base': calc_data.get('BASE', 0),
+                            'base_2': calc_data.get('BASE_2', 0),
                             'iva': calc_data.get('IVA', 0),
                             'auto': comentario_auto,
                             'tipo': tipo_val,
                             'tercero': tercero_val
                         })
 
+                    # --- NUEVO: SE AÑADIÓ row['base'] AL FINAL PARA ORDENAR DE MENOR A MAYOR DENTRO DEL BLOQUE ---
                     def sort_key(row):
                         is_auto = 0 if 'AUTORRETENEDOR' in row['auto'].upper() else 1
                         is_fc = 0 if 'FC' in row['tipo'] else 1
-                        return (is_auto, is_fc, row['tipo'], row['tercero'])
+                        
+                        # 1. is_auto e is_fc: Separan los Autorretenedores del resto.
+                        # 2. row['tipo']: Mantiene agrupados los GC1, FC1, etc.
+                        # 3. row['base']: Ordena de menor a mayor numéricamente dentro de ese tipo.
+                        # 4. row['tercero']: Queda al final para no dañar el orden numérico.
+                        return (is_auto, is_fc, row['tipo'], row['base'], row['tercero'])
 
                     row_data_list.sort(key=sort_key)
 
                     idx_insert = col_tercero + 1
-                    sheet_aud_comp_orig.insert_cols(idx_insert, amount=3)
+                    
+                    sheet_aud_comp_orig.insert_cols(idx_insert, amount=4)
 
                     c_AUTORRETENCION = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert)
                     c_AUTORRETENCION.value = 'AUTORRETENCION'
@@ -364,7 +388,11 @@ class ConciliadorAuditoria:
                     c_base.value = 'BASE'
                     c_base.fill = PatternFill(start_color="339966", end_color="339966", fill_type="solid")
 
-                    c_iva = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 2)
+                    c_base2 = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 2)
+                    c_base2.value = 'BASE_2'
+                    c_base2.fill = PatternFill(start_color="33EAEA", end_color="33EAEA", fill_type="solid") 
+
+                    c_iva = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 3)
                     c_iva.value = 'IVA'
                     c_iva.fill = PatternFill(start_color="FF9900", end_color="FF9900", fill_type="solid")
 
@@ -382,12 +410,17 @@ class ConciliadorAuditoria:
                         c_b.value = row_dict['base']
                         c_b.number_format = '#,##0.00'
 
-                        c_i = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 2)
+                        c_b2 = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 2)
+                        c_b2.value = row_dict['base_2']
+                        c_b2.number_format = '#,##0.00'
+
+                        c_i = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 3)
                         c_i.value = row_dict['iva']
                         c_i.number_format = '#,##0.00'
 
+                        # Desplazar los valores originales en 4 posiciones
                         for c in range(idx_insert, len(orig_vals) + 1):
-                            sheet_aud_comp_orig.cell(row=excel_row_idx, column=c + 3).value = orig_vals[c-1]
+                            sheet_aud_comp_orig.cell(row=excel_row_idx, column=c + 4).value = orig_vals[c-1]
                 # ---------------------------------------------
 
                 red_fill = PatternFill(start_color=RED_FILL_COLOR, end_color=RED_FILL_COLOR, fill_type="solid")
