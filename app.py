@@ -26,30 +26,29 @@ from preview_widget import VistaPreviaExcel
 from informes_iva import GeneradorInformeIVA
 from token_engine import FormateadorToken
 
-
-
 PALETTE = {
-    "bg": "#E9ECF2",
-    "surface": "#FFFFFF",
-    "surface_alt": "#F3F5F9",
-    "border": "#D3D8E0",
-    "border_strong": "#B9C0CC",
-    "text": "#111827",
-    "text_muted": "#5B6472",
-    "primary": "#2563EB",
-    "primary_hover": "#1D4ED8",
-    "primary_active": "#1E40AF",
+    "bg": "#F3F4F6",             
+    "surface": "#FFFFFF",        
+    "surface_alt": "#F9FAFB",
+    "sidebar_bg": "#0F172A",
+    "sidebar_fg": "#94A3B8",
+    "sidebar_active": "#1E293B",
+    "sidebar_accent": "#6366F1",
+    "border": "#E2E8F0",         
+    "border_strong": "#CBD5E1",  
+    "text": "#0F172A",           
+    "text_muted": "#64748B",     
+    "primary": "#4F46E5",        
+    "primary_hover": "#4338CA",  
+    "primary_active": "#3730A3", 
     "primary_fg": "#FFFFFF",
-    "success": "#16A34A",
-    "danger": "#DC2626",
-    "console_bg": "#12141A",
-    "console_fg": "#E5E7EB",
+    "success": "#10B981",        
+    "danger": "#EF4444",         
+    "console_bg": "#1E293B",     
+    "console_fg": "#F8FAFC",     
 }
 
-
 class ScrollableChecklist(ttk.Frame):
-    """Contenedor con scroll vertical para listas largas de checkboxes."""
-
     def __init__(self, parent, height=170, **kwargs):
         super().__init__(parent, style="Card.TFrame", **kwargs)
         self._xls_actual=None
@@ -98,7 +97,6 @@ class ScrollableChecklist(ttk.Frame):
         else:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
 
-
 class ConciliadorApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -107,8 +105,8 @@ class ConciliadorApp(tk.Tk):
         self.style_engine.theme_use("clam")
         self.configure(bg=PALETTE["bg"])
         self.title(f"{APP_NAME} - v{APP_VERSION}")
-        self.geometry("880x700")
-        self.minsize(800, 520)
+        self.state("zoomed")
+        self.minsize(980, 600)
         self.set_app_icon()
         self.file_path = tk.StringVar()
         self.sheet_vars = {clave: tk.StringVar(value=nombre) for clave, nombre in DEFAULT_SHEET_NAMES.items()}
@@ -121,26 +119,21 @@ class ConciliadorApp(tk.Tk):
         self._procesando = False
         self._generador_iva=None
         self._procesando_pdf_iva = False
-        self._procesando_iva=False
+        self.current_page = None
 
         self._setup_styles()
         self._build_ui()
         self.after(150, self._procesar_cola)
 
-
     def set_app_icon(self):
-        icon_path = Path(__file__).resolve().parent
-        icon_path = icon_path / "assets" / "icon.ico"
-
+        icon_path = Path(__file__).resolve().parent / "assets" / "icon.ico"
         if icon_path.exists():
             try:
                 self.iconbitmap(icon_path)
             except Exception as e:
                 logger.error(f"Error al establecer el icono de la aplicación: {e}")
         else:
-                logger.info("Icono de la aplicación establecido correctamente.")
-
-    # ------------------------------------------------------------------ STYLES & UI SETUP
+            logger.info("Icono de la aplicación establecido correctamente.")
 
     def _on_liberar_archivo(self):
         if self._procesando or self._procesando_iva or self._procesando_token:
@@ -162,7 +155,6 @@ class ConciliadorApp(tk.Tk):
 
         self._poblar_checklist_columnas([])
         
-
         if hasattr(self, "combo_hoja_iva"):
             self.combo_hoja_iva['values'] = []
         if hasattr(self, "hoja_iva_var"):
@@ -176,7 +168,7 @@ class ConciliadorApp(tk.Tk):
 
         import gc
         gc.collect()
-        # gui.py — _on_liberar_archivo (agregar dentro del método)
+        
         self._generador_iva = None
         if hasattr(self, "btn_exportar_pdf"):
             self.btn_exportar_pdf.configure(state="disabled")
@@ -185,8 +177,6 @@ class ConciliadorApp(tk.Tk):
 
         self._set_estado("Sesión liberada. El archivo quedó disponible para otros programas.")
             
-# gui.py — reemplazar _on_generar_informe_iva y _generar_informe_iva_en_hilo
-
     def _on_generar_informe_iva(self):
         if self._procesando_iva:
             return
@@ -236,52 +226,50 @@ class ConciliadorApp(tk.Tk):
         self._procesando_iva = False
         self._set_btn_enabled(self.btn_generar_iva, True)
 
-    # gui.py — nuevos métodos (agregar cerca de _finalizar_iva)
     def _on_exportar_pdf_iva(self):
-            if self._procesando_pdf_iva:
-                return
-            if not self._generador_iva or self._generador_iva.df_filtrado is None:
-                messagebox.showwarning("Informe requerido", "Primero debes generar el informe de IVA.")
-                return
+        if self._procesando_pdf_iva:
+            return
+        if not self._generador_iva or self._generador_iva.df_filtrado is None:
+            messagebox.showwarning("Informe requerido", "Primero debes generar el informe de IVA.")
+            return
 
-            # Generar la ruta sugerida aplicando la lógica de Nombre Emisor + Informe de IVA + Periodo
-            cliente_nombre = ""
-            df_f = self._generador_iva.df_filtrado
-            if "Grupo" in df_f.columns and "Nombre Emisor" in df_f.columns:
-                df_emitidos = df_f[df_f["Grupo"].astype(str).str.strip() == "Emitido"]
-                if not df_emitidos.empty:
-                    val_emisor = df_emitidos["Nombre Emisor"].iloc[0]
-                    if pd.notna(val_emisor) and str(val_emisor).strip():
-                        cliente_nombre = str(val_emisor).strip() + " - "
+        cliente_nombre = ""
+        df_f = self._generador_iva.df_filtrado
+        if "Grupo" in df_f.columns and "Nombre Emisor" in df_f.columns:
+            df_emitidos = df_f[df_f["Grupo"].astype(str).str.strip() == "Emitido"]
+            if not df_emitidos.empty:
+                val_emisor = df_emitidos["Nombre Emisor"].iloc[0]
+                if pd.notna(val_emisor) and str(val_emisor).strip():
+                    cliente_nombre = str(val_emisor).strip() + " - "
 
-            periodo_limpio = self._generador_iva.periodo_texto.replace("PERÍODO:", "").strip() if self._generador_iva.periodo_texto else ""
-            sufijo_periodo = f" - {periodo_limpio}" if periodo_limpio else ""
+        periodo_limpio = self._generador_iva.periodo_texto.replace("PERÍODO:", "").strip() if self._generador_iva.periodo_texto else ""
+        sufijo_periodo = f" - {periodo_limpio}" if periodo_limpio else ""
 
-            nombre_sugerido = f"{cliente_nombre}INFORME DE IVA{sufijo_periodo}.pdf"
-            for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
-                nombre_sugerido = nombre_sugerido.replace(char, '')
+        nombre_sugerido = f"{cliente_nombre}INFORME DE IVA{sufijo_periodo}.pdf"
+        for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
+            nombre_sugerido = nombre_sugerido.replace(char, '')
 
-            ruta_sugerida = Path(self._generador_iva.ruta_archivo).with_name(nombre_sugerido)
+        ruta_sugerida = Path(self._generador_iva.ruta_archivo).with_name(nombre_sugerido)
 
-            ruta_pdf = filedialog.asksaveasfilename(
-                title="Guardar informe de IVA en PDF",
-                defaultextension=".pdf",
-                initialfile=ruta_sugerida.name,
-                filetypes=[("Archivo PDF", "*.pdf")],
-            )
-            if not ruta_pdf:
-                return
+        ruta_pdf = filedialog.asksaveasfilename(
+            title="Guardar informe de IVA en PDF",
+            defaultextension=".pdf",
+            initialfile=ruta_sugerida.name,
+            filetypes=[("Archivo PDF", "*.pdf")],
+        )
+        if not ruta_pdf:
+            return
 
-            self._procesando_pdf_iva = True
-            self.btn_exportar_pdf.configure(state="disabled")
-            self.lbl_estado_iva.configure(text="Generando PDF...")
+        self._procesando_pdf_iva = True
+        self.btn_exportar_pdf.configure(state="disabled")
+        self.lbl_estado_iva.configure(text="Generando PDF...")
 
-            hilo = threading.Thread(
-                target=self._exportar_pdf_iva_en_hilo,
-                args=(ruta_pdf,),
-                daemon=True
-            )
-            hilo.start()
+        hilo = threading.Thread(
+            target=self._exportar_pdf_iva_en_hilo,
+            args=(ruta_pdf,),
+            daemon=True
+        )
+        hilo.start()
 
     def _exportar_pdf_iva_en_hilo(self, ruta_pdf):
         try:
@@ -305,7 +293,7 @@ class ConciliadorApp(tk.Tk):
             return
 
         try:
-            import pymupdf as fitzz  # noqa: F401
+            import pymupdf as fitz  # noqa: F401
         except ImportError:
             messagebox.showerror(
                 "Dependencia faltante",
@@ -324,193 +312,98 @@ class ConciliadorApp(tk.Tk):
 
     def _setup_styles(self):
         self.style = self.style_engine
-
         font_family = "Segoe UI" if "win32" in self.tk.call("tk", "windowingsystem") else "Helvetica"
         self._font = font_family
 
-        self.style.configure(".", font=(font_family, 9), background=PALETTE["bg"])
+        self.style.configure(".", font=(font_family, 10), background=PALETTE["bg"])
         self.style.configure("TFrame", background=PALETTE["bg"])
         self.style.configure("Card.TFrame", background=PALETTE["surface"])
         self.style.configure("CardAlt.TFrame", background=PALETTE["surface_alt"])
 
         self.style.configure(
             "Header.TLabel",
-            font=(font_family, 12, "bold"),
+            font=(font_family, 16, "bold"),
             foreground=PALETTE["text"],
             background=PALETTE["bg"],
         )
         self.style.configure(
             "CardHeader.TLabel",
-            font=(font_family, 12, "bold"),
+            font=(font_family, 13, "bold"),
             foreground=PALETTE["text"],
             background=PALETTE["surface"],
         )
         self.style.configure(
             "Subheader.TLabel",
-            font=(font_family, 9),
+            font=(font_family, 10),
             foreground=PALETTE["text_muted"],
             background=PALETTE["bg"],
         )
         self.style.configure(
             "SubheaderCard.TLabel",
-            font=(font_family, 9),
+            font=(font_family, 10),
             foreground=PALETTE["text_muted"],
             background=PALETTE["surface"],
         )
         self.style.configure(
             "FieldLabel.TLabel",
-            font=(font_family, 9, "bold"),
+            font=(font_family, 10, "bold"),
             foreground=PALETTE["text"],
             background=PALETTE["surface"],
         )
         self.style.configure(
             "FieldLabelOptional.TLabel",
-            font=(font_family, 9),
+            font=(font_family, 10),
             foreground=PALETTE["text_muted"],
             background=PALETTE["surface"],
         )
-
-        self.style.configure(
-            "TNotebook",
-            background=PALETTE["bg"],
-            borderwidth=0,
-            tabmargins=(4, 6, 4, 0),
-        )
-        self.style.configure(
-            "TNotebook.Tab",
-            font=(font_family, 9, "bold"),
-            padding=(16, 8),
-        )
-
+        
         self.style.configure(
             "Secondary.TButton",
-            font=(font_family, 9),
-            padding=(10, 6),
+            font=(font_family, 10, "bold"),
+            padding=(14, 8),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["border_strong"],
         )
+        self.style.map(
+            "Secondary.TButton",
+            background=[("active", PALETTE["border"])],
+            foreground=[("active", PALETTE["text"])],
+        )
+        
         self.style.configure(
             "Toggle.TButton",
-            font=(font_family, 8, "bold"),
-            padding=(8, 4),
+            font=(font_family, 9, "bold"),
+            padding=(12, 6),
+            background=PALETTE["surface_alt"],
+            foreground=PALETTE["text"],
+            bordercolor=PALETTE["border_strong"],
+        )
+        self.style.map(
+            "Toggle.TButton",
+            background=[("active", PALETTE["border"])],
         )
 
         self.style.configure(
             "TCombobox",
-            padding=(6, 5),
-            fieldbackground=PALETTE["surface_alt"],
-            background=PALETTE["surface_alt"],
-        )
-        self.style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", PALETTE["surface_alt"])],
-        )
-        self.style.configure(
-            "TEntry",
             padding=(8, 6),
             fieldbackground=PALETTE["surface_alt"],
-        )
-        self.style.map(
-            "TEntry",
-            fieldbackground=[("readonly", PALETTE["surface_alt"])],
-        )
-
-        self.style.configure(
-            "Status.TLabel",
-            font=(font_family, 8),
-            padding=(14, 7),
             background=PALETTE["surface_alt"],
-            foreground=PALETTE["text_muted"],
-        )
-        self.style.configure(
-            "StatusDot.TLabel",
-            font=(font_family, 10),
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["text_muted"],
-        )
-
-        self.style.configure("TSeparator", background=PALETTE["border_strong"])
-        self.style.configure(
-            "Card.TLabelframe",
-            background=PALETTE["surface"],
-            borderwidth=1,
-            relief="solid",
-            bordercolor=PALETTE["border_strong"],
-        )
-        self.style.configure(
-            "Card.TLabelframe.Label",
-            font=(font_family, 9, "bold"),
-            foreground=PALETTE["text"],
-            background=PALETTE["surface"],
-        )
-        self.style.configure("Card.TCheckbutton", background=PALETTE["surface"], font=(font_family, 9))
-
-        self.style.configure(
-            "TProgressbar",
-            thickness=6,
-            background=PALETTE["primary"],
-            troughcolor=PALETTE["border"],
-            borderwidth=0,
-        )
-        self.style.configure(
-            "TNotebook",
-            background=PALETTE["bg"],
-            borderwidth=0,
-            tabmargins=(4, 6, 4, 0),
-        )
-        self.style.configure(
-            "TNotebook.Tab",
-            font=(font_family, 9, "bold"),
-            padding=(16, 8),
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["text_muted"],
-        )
-        self.style.map(
-            "TNotebook.Tab",
-            background=[("selected", PALETTE["surface"])],
-            foreground=[("selected", PALETTE["text"])],
-        )
-
-        self.style.configure(
-            "Secondary.TButton",
-            font=(font_family, 9),
-            padding=(10, 6),
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["text"],
-            bordercolor=PALETTE["border_strong"],
-        )
-        self.style.map(
-            "Secondary.TButton",
-            background=[("active", PALETTE["border"])],
-        )
-        self.style.configure(
-            "Toggle.TButton",
-            font=(font_family, 8, "bold"),
-            padding=(8, 4),
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["text"],
-            bordercolor=PALETTE["border_strong"],
-        )
-        self.style.map(
-            "Toggle.TButton",
-            background=[("active", PALETTE["border"])],
-        )
-
-        self.style.configure(
-            "TCombobox",
-            padding=(6, 5),
-            fieldbackground=PALETTE["surface_alt"],
-            background=PALETTE["surface_alt"],
-            arrowsize=14,
+            arrowsize=16,
+            font=(font_family, 10)
         )
         self.style.map(
             "TCombobox",
             fieldbackground=[("readonly", PALETTE["surface_alt"])],
             background=[("readonly", PALETTE["surface_alt"])],
         )
+        
         self.style.configure(
             "TEntry",
-            padding=(8, 6),
+            padding=(10, 8),
             fieldbackground=PALETTE["surface_alt"],
             bordercolor=PALETTE["border_strong"],
+            font=(font_family, 10)
         )
         self.style.map(
             "TEntry",
@@ -519,33 +412,33 @@ class ConciliadorApp(tk.Tk):
 
         self.style.configure(
             "Status.TLabel",
-            font=(font_family, 8),
-            padding=(14, 7),
-            background=PALETTE["surface_alt"],
+            font=(font_family, 9),
+            padding=(16, 8),
+            background=PALETTE["surface"],
             foreground=PALETTE["text_muted"],
         )
         self.style.configure(
             "StatusDot.TLabel",
-            font=(font_family, 10),
-            background=PALETTE["surface_alt"],
+            font=(font_family, 12),
+            background=PALETTE["surface"],
             foreground=PALETTE["text_muted"],
         )
 
-        self.style.configure("TSeparator", background=PALETTE["border_strong"])
+        self.style.configure("TSeparator", background=PALETTE["border"])
         self.style.configure(
             "Card.TLabelframe",
             background=PALETTE["surface"],
             borderwidth=1,
             relief="solid",
-            bordercolor=PALETTE["border_strong"],
+            bordercolor=PALETTE["border"],
         )
         self.style.configure(
             "Card.TLabelframe.Label",
-            font=(font_family, 9, "bold"),
+            font=(font_family, 10, "bold"),
             foreground=PALETTE["text"],
             background=PALETTE["surface"],
         )
-        self.style.configure("Card.TCheckbutton", background=PALETTE["surface"], font=(font_family, 9))
+        self.style.configure("Card.TCheckbutton", background=PALETTE["surface"], font=(font_family, 10))
         self.style.map(
             "Card.TCheckbutton",
             background=[("active", PALETTE["surface"])],
@@ -560,76 +453,125 @@ class ConciliadorApp(tk.Tk):
         )
 
     def _build_ui(self):
+        self.main_container = tk.Frame(self, bg=PALETTE["bg"])
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+
+        self._build_sidebar()
+        
+        self.content_frame = tk.Frame(self.main_container, bg=PALETTE["bg"])
+        self.content_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         self._build_barra_superior()
 
-        ttk.Separator(self, orient="horizontal").pack(fill=tk.X)
+        self.page_container = tk.Frame(self.content_frame, bg=PALETTE["bg"])
+        self.page_container.pack(fill=tk.BOTH, expand=True, padx=32, pady=(16, 0))
 
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=16, pady=(14, 12))
+        self.tab_config = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_token = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_reportes_iva = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_pivote_movimientos = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_preview = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_ejecucion = ttk.Frame(self.page_container, style="TFrame")
 
-        self.tab_config = ttk.Frame(self.notebook, style="TFrame")
-        self.tab_preview = ttk.Frame(self.notebook, style="TFrame")
-        self.tab_ejecucion = ttk.Frame(self.notebook, style="TFrame")
-        self.tab_reportes_iva=ttk.Frame(self.notebook, style="TFrame")
-        self.tab_token=ttk.Frame(self.notebook, style="TFrame")
-        self.tab_pivote_movimientos=ttk.Frame(self.notebook, style="TFrame")
-
-        self.notebook.add(self.tab_token, text=" 🧾  Formatear Token  ")
-        self.notebook.add(self.tab_config, text="  ⚙  Configuración para auditoria  ")
-        self.notebook.add(self.tab_reportes_iva, text="  📊  Reportes IVA  ")
-        self.notebook.add(self.tab_preview, text="  👁  Vista Previa  ")
-        self.notebook.add(self.tab_ejecucion, text="  ▶  Ejecución y Logs  ")
-        self.notebook.add(self.tab_pivote_movimientos,text=" ⇆ Reestructurar columnas de movimientos ")
+        self.pages = {
+            "config": self.tab_config,
+            "token": self.tab_token,
+            "iva": self.tab_reportes_iva,
+            "pivote": self.tab_pivote_movimientos,
+            "preview": self.tab_preview,
+            "exec": self.tab_ejecucion
+        }
         
         self._build_tab_config()
+        self._build_tab_token()
+        self._build_tab_reportes_iva()
+        self._build_tab_pivotar()
         self._build_tab_preview()
         self._build_tab_ejecucion()
-        self._build_tab_reportes_iva()
-        self._build_tab_token()
-        self._build_tab_pivotar()
 
         self._build_barra_estado()
+        self.show_page("config")
+
+    def _build_sidebar(self):
+        self.sidebar = tk.Frame(self.main_container, bg=PALETTE["sidebar_bg"], width=250)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        self.sidebar.pack_propagate(False)
+
+        header_sidebar = tk.Frame(self.sidebar, bg=PALETTE["sidebar_bg"])
+        header_sidebar.pack(fill=tk.X, pady=(32, 32))
+
+        lbl_title = tk.Label(
+            header_sidebar, 
+            text=APP_NAME, 
+            bg=PALETTE["sidebar_bg"], 
+            fg="#FFFFFF", 
+            font=(self._font, 14, "bold"), 
+            anchor="w",
+            justify="left",
+            wraplength=200
+        )
+        lbl_title.pack(fill=tk.X, padx=24)
+        
+        lbl_version = tk.Label(
+            header_sidebar, 
+            text=f"v{APP_VERSION}", 
+            bg=PALETTE["sidebar_bg"], 
+            fg=PALETTE["sidebar_accent"], 
+            font=(self._font, 10, "bold"), 
+            anchor="w"
+        )
+        lbl_version.pack(fill=tk.X, padx=24, pady=(2, 0))
+
+        self.nav_buttons = {}
+        
+        self._add_nav_button("token", "🧾  Formatear Token", self.show_page)
+        self._add_nav_button("config", "⚙  Config. Auditoría", self.show_page)
+        self._add_nav_button("iva", "📊  Reportes IVA", self.show_page)
+        self._add_nav_button("pivote", "⇆  Movimientos", self.show_page)
+        self._add_nav_button("preview", "👁  Vista Previa", self.show_page)
+        self._add_nav_button("exec", "▶  Ejecución y Logs", self.show_page)
+    def _add_nav_button(self, page_id, text, command):
+        btn = tk.Button(
+            self.sidebar, text=text, bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"], 
+            font=(self._font, 10, "bold"), bd=0, relief="flat", anchor="w", 
+            padx=24, pady=14, cursor="hand2", command=lambda: command(page_id)
+        )
+        btn.pack(fill=tk.X, pady=2, padx=12)
+        btn.bind("<Enter>", lambda e: btn.configure(bg=PALETTE["sidebar_active"], fg="#FFFFFF") if self.current_page != page_id else None)
+        btn.bind("<Leave>", lambda e: btn.configure(bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"]) if self.current_page != page_id else None)
+        self.nav_buttons[page_id] = btn
+
+    def show_page(self, page_id):
+        if self.current_page:
+            self.pages[self.current_page].pack_forget()
+            self.nav_buttons[self.current_page].configure(bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"])
+
+        self.pages[page_id].pack(fill=tk.BOTH, expand=True)
+        self.nav_buttons[page_id].configure(bg=PALETTE["sidebar_active"], fg="#FFFFFF")
+        self.current_page = page_id
 
     def _build_barra_superior(self):
-        frame_top = ttk.Frame(self, padding=(18, 16, 18, 14), style="TFrame")
-        frame_top.pack(fill=tk.X)
+        header_card = tk.Frame(self.content_frame, bg=PALETTE["surface"], bd=0)
+        header_card.pack(fill=tk.X, padx=32, pady=(32, 0))
+        
+        fila_archivo = ttk.Frame(header_card, style="Card.TFrame", padding=(24, 20))
+        fila_archivo.pack(fill=tk.BOTH)
 
-        titulo = ttk.Frame(frame_top, style="TFrame")
-        titulo.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(titulo, text=APP_NAME, style="Header.TLabel").pack(side=tk.LEFT)
-        ttk.Label(titulo, text=f"  ·  v{APP_VERSION}", style="Subheader.TLabel").pack(side=tk.LEFT)
+        lbl_instruccion = ttk.Label(fila_archivo, text="Archivo de Trabajo", style="FieldLabel.TLabel", background=PALETTE["surface"])
+        lbl_instruccion.pack(side=tk.LEFT, padx=(0, 16))
 
-        fila_archivo = ttk.Frame(frame_top, style="TFrame")
-        fila_archivo.pack(fill=tk.X)
+        entry_path = ttk.Entry(fila_archivo, textvariable=self.file_path, state="readonly", font=(self._font, 10))
+        entry_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 16))
 
-        lbl_instruccion = ttk.Label(
-            fila_archivo,
-            text="Archivo de trabajo",
-            style="Subheader.TLabel"
-        )
-        lbl_instruccion.pack(side=tk.LEFT, padx=(0, 12))
-
-        entry_path = ttk.Entry(
-            fila_archivo,
-            textvariable=self.file_path,
-            state="readonly"
-        )
-        entry_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
-
-        btn_browse = self._btn_primary(fila_archivo, "📂  Examinar...", self._on_abrir_archivo)
+        btn_browse = self._btn_primary(fila_archivo, "📂 Explorar...", self._on_abrir_archivo)
         btn_browse.pack(side=tk.LEFT)
 
-        btn_liberar=ttk.Button(            
-            fila_archivo,
-            text="🔓 Liberar archivo",
-            command=self._on_liberar_archivo,
-            cursor="hand2"
-        )
+        btn_liberar = ttk.Button(fila_archivo, text="🔓 Liberar", style="Secondary.TButton", command=self._on_liberar_archivo, cursor="hand2")
         btn_liberar.pack(side=tk.LEFT, padx=(12, 0))
 
     def _card(self, parent, **pack_kwargs):
-        outer = tk.Frame(parent, bg=PALETTE["border_strong"])
-        inner = ttk.Frame(outer, style="Card.TFrame", padding=20)
+        outer = tk.Frame(parent, bg=PALETTE["border"])
+        inner = ttk.Frame(outer, style="Card.TFrame", padding=28)
         inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
         outer.pack(**pack_kwargs)
         return inner
@@ -644,11 +586,11 @@ class ConciliadorApp(tk.Tk):
             fg=PALETTE["primary_fg"],
             activebackground=PALETTE["primary_hover"],
             activeforeground=PALETTE["primary_fg"],
-            disabledforeground="#E5E7EB",
+            disabledforeground=PALETTE["border_strong"],
             relief="flat",
             bd=0,
-            padx=16,
-            pady=9,
+            padx=20,
+            pady=10,
             cursor="hand2",
         )
         btn.bind("<Enter>", lambda e: btn.configure(bg=PALETTE["primary_hover"]) if btn["state"] != "disabled" else None)
@@ -661,133 +603,76 @@ class ConciliadorApp(tk.Tk):
             bg=PALETTE["primary"] if enabled else "#9CA3AF",
         )
 
-    # gui.py — corregido
-
-
-       
-
     def _build_tab_config(self):
-        wrapper = ttk.Frame(self.tab_config, padding=(4, 16, 4, 4), style="TFrame")
-        wrapper.pack(fill=tk.BOTH, expand=True)
+            wrapper = ttk.Frame(self.tab_config, padding=(0, 0, 0, 0), style="TFrame")
+            wrapper.pack(fill=tk.BOTH, expand=True)
 
-        card_hojas = self._card(wrapper, fill=tk.X, pady=(0, 16))
+            ttk.Label(wrapper, text="Configuración para Auditoría", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-        ttk.Label(
-            card_hojas,
-            text="Asignación de Estructura de Hojas",
-            style="CardHeader.TLabel"
-        ).pack(anchor="w")
+            paneles_frame = ttk.Frame(wrapper, style="TFrame")
+            paneles_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            card_hojas,
-            text="Relaciona cada sección requerida con el nombre exacto de la pestaña cargada en tu archivo.",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(4, 16))
+            col_izq = ttk.Frame(paneles_frame, style="TFrame")
+            col_izq.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 16))
 
-        grid_frame = ttk.Frame(card_hojas, style="Card.TFrame")
-        grid_frame.pack(fill=tk.X, anchor="n")
+            col_der = ttk.Frame(paneles_frame, style="TFrame")
+            col_der.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.combos_hojas = {}
-        for i, clave in enumerate(SHEET_ORDER):
-            etiqueta = SHEET_LABELS[clave]
-            es_opcional = clave in OPTIONAL_SHEETS
+            card_hojas = self._card(col_izq, fill=tk.X)
+            ttk.Label(card_hojas, text="Estructura de Hojas", style="CardHeader.TLabel").pack(anchor="w")
+            ttk.Label(card_hojas, text="Relaciona cada sección requerida con la pestaña de tu archivo.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
 
-            lbl_texto = f"{etiqueta}" if es_opcional else f"{etiqueta}  *"
-            estilo_lbl = "FieldLabelOptional.TLabel" if es_opcional else "FieldLabel.TLabel"
+            grid_frame = ttk.Frame(card_hojas, style="Card.TFrame")
+            grid_frame.pack(fill=tk.X, anchor="n")
 
-            lbl = ttk.Label(grid_frame, text=lbl_texto, style=estilo_lbl)
-            lbl.grid(row=i, column=0, sticky="w", pady=9, padx=(0, 24))
+            self.combos_hojas = {}
+            for i, clave in enumerate(SHEET_ORDER):
+                etiqueta = SHEET_LABELS[clave]
+                es_opcional = clave in OPTIONAL_SHEETS
+                lbl_texto = f"{etiqueta}" if es_opcional else f"{etiqueta}  *"
+                estilo_lbl = "FieldLabelOptional.TLabel" if es_opcional else "FieldLabel.TLabel"
 
-            combo = ttk.Combobox(
-                grid_frame,
-                textvariable=self.sheet_vars[clave],
-                width=45,
-                state="readonly",
-                cursor="hand2"
-            )
-            combo.grid(row=i, column=1, sticky="ew", pady=9)
-            self.combos_hojas[clave] = combo
+                ttk.Label(grid_frame, text=lbl_texto, style=estilo_lbl).grid(row=i, column=0, sticky="w", pady=10, padx=(0, 20))
+                combo = ttk.Combobox(grid_frame, textvariable=self.sheet_vars[clave], width=35, state="readonly", cursor="hand2")
+                combo.grid(row=i, column=1, sticky="ew", pady=10)
+                self.combos_hojas[clave] = combo
 
-            if clave == "aud_comp":
-                combo.bind("<<ComboboxSelected>>", self._refrescar_columnas_aud_comp)
+                if clave == "aud_comp":
+                    combo.bind("<<ComboboxSelected>>", self._refrescar_columnas_aud_comp)
 
-            # --- NUEVO: Botón para limpiar campos opcionales ---
-            if es_opcional:
-                btn_limpiar = tk.Button(
-                    grid_frame,
-                    text="✖",
-                    command=lambda c=clave: self.sheet_vars[c].set(""), # Borra el contenido de la variable
-                    bg=PALETTE["surface"],
-                    fg=PALETTE["text_muted"],
-                    font=(self._font, 10, "bold"),
-                    relief="flat",
-                    bd=0,
-                    cursor="hand2"
-                )
-                # Efectos hover para que se ponga rojo al pasar el mouse
-                btn_limpiar.bind("<Enter>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["danger"]))
-                btn_limpiar.bind("<Leave>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["text_muted"]))
-                
-                btn_limpiar.grid(row=i, column=2, padx=(8, 0))
+                if es_opcional:
+                    btn_limpiar = tk.Button(
+                        grid_frame, text="✖", command=lambda c=clave: self.sheet_vars[c].set(""),
+                        bg=PALETTE["surface"], fg=PALETTE["text_muted"], font=(self._font, 10, "bold"),
+                        relief="flat", bd=0, cursor="hand2"
+                    )
+                    btn_limpiar.bind("<Enter>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["danger"]))
+                    btn_limpiar.bind("<Leave>", lambda e, b=btn_limpiar: b.configure(fg=PALETTE["text_muted"]))
+                    btn_limpiar.grid(row=i, column=2, padx=(8, 0))
 
-        grid_frame.columnconfigure(1, weight=1)
+            grid_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(
-            card_hojas,
-            text="* Campo obligatorio",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(10, 0))
+            ttk.Label(card_hojas, text="* Campo obligatorio", style="SubheaderCard.TLabel").pack(anchor="w", pady=(14, 0))
 
-        card_seriales = self._card(wrapper, fill=tk.BOTH, expand=True)
+            card_seriales = self._card(col_der, fill=tk.BOTH, expand=True)
+            ttk.Label(card_seriales, text="Configuración de Seriales", style="CardHeader.TLabel").pack(anchor="w")
+            ttk.Label(card_seriales, text="Marca a qué categoría(s) pertenece cada columna de la hoja AUD-COMP.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 0))
 
-        header_seriales = ttk.Frame(card_seriales, style="Card.TFrame")
-        header_seriales.pack(fill=tk.X)
+            barra_toggle = ttk.Frame(card_seriales, style="Card.TFrame")
+            barra_toggle.pack(fill=tk.X, pady=(20, 12))
+            self._build_leyenda_categorias(barra_toggle)
 
-        texto_seriales = ttk.Frame(header_seriales, style="Card.TFrame")
-        texto_seriales.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            fila_buscador = ttk.Frame(card_seriales, style="Card.TFrame")
+            fila_buscador.pack(fill=tk.X, pady=(4, 12))
+            ttk.Label(fila_buscador, text="🔍 Buscar cuenta:", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+            
+            self.search_aud_var = tk.StringVar()
+            self.search_aud_var.trace_add("write", self._filtrar_columnas_aud)
+            ttk.Entry(fila_buscador, textvariable=self.search_aud_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Label(
-            texto_seriales,
-            text="Configuración de Seriales",
-            style="CardHeader.TLabel"
-        ).pack(anchor="w")
-
-        ttk.Label(
-            texto_seriales,
-            text="Marca a qué categoría(s) pertenece cada columna de la hoja AUD-COMP.",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(4, 0))
-
-        barra_toggle = ttk.Frame(card_seriales, style="Card.TFrame")
-        barra_toggle.pack(fill=tk.X, pady=(14, 10))
-
-        self._build_leyenda_categorias(barra_toggle)
-
-        acciones_masivas = ttk.Frame(card_seriales, style="Card.TFrame")
-        acciones_masivas.pack(fill=tk.X, pady=(0, 10))
-
-        for etiqueta, categoria, color in (
-            ("IVA", "iva", CATEGORY_COLORS["iva"]),
-            ("BASE", "base", CATEGORY_COLORS["base"]),
-            ("BASE 2", "base2", CATEGORY_COLORS["base2"]),
-            ("Autorretenedor", "autorretenedor", CATEGORY_COLORS["autorretenedor"])
-        ):
-            grupo = tk.Frame(acciones_masivas, bg=PALETTE["surface"])
-            grupo.pack(side=tk.LEFT, padx=(0, 20))
-            tk.Frame(grupo, bg=color, width=10, height=10).pack(side=tk.LEFT, padx=(0, 6), pady=2)
-            ttk.Button(
-                grupo, text=f"Todo {etiqueta}", style="Toggle.TButton", cursor="hand2",
-                command=lambda c=categoria: self._marcar_todos(c, True)
-            ).pack(side=tk.LEFT)
-            ttk.Button(
-                grupo, text="Ninguno", style="Toggle.TButton", cursor="hand2",
-                command=lambda c=categoria: self._marcar_todos(c, False)
-            ).pack(side=tk.LEFT, padx=(4, 0))
-
-        self.lista_columnas_aud = ScrollableChecklist(card_seriales, height=240)
-        self.lista_columnas_aud.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-
-        self._poblar_checklist_columnas([])
+            self.lista_columnas_aud = ScrollableChecklist(card_seriales, height=330)
+            self.lista_columnas_aud.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+            self._poblar_checklist_columnas([])
 
     def _build_leyenda_categorias(self, parent):
         for etiqueta, color in (
@@ -797,11 +682,8 @@ class ConciliadorApp(tk.Tk):
             ("Autorretenedor", CATEGORY_COLORS["autorretenedor"])
         ):
             chip = tk.Frame(parent, bg=color)
-            chip.pack(side=tk.LEFT, padx=(0, 16))
-            tk.Label(
-                chip, text=f"  {etiqueta}  ", bg=color, fg="#FFFFFF",
-                font=(self._font, 8, "bold")
-            ).pack(ipady=2)
+            chip.pack(side=tk.LEFT, padx=(0, 20))
+            tk.Label(chip, text=f"  {etiqueta}  ", bg=color, fg="#FFFFFF", font=(self._font, 9, "bold")).pack(ipady=4)
 
     def _refrescar_columnas_aud_comp(self, *_):
         ruta = self.file_path.get()
@@ -817,17 +699,7 @@ class ConciliadorApp(tk.Tk):
             self._poblar_checklist_columnas([])
             return
 
-        columnas = []
-        for col in df.columns:
-            nombre = str(col).strip()
-            if not nombre or nombre.startswith("Unnamed"):
-                continue
-            if nombre in COLUMNAS_EXCLUIDAS_AUD_COMP:
-                continue
-            if df[col].dropna().empty:
-                continue
-            columnas.append(nombre)
-
+        columnas = [str(col).strip() for col in df.columns if str(col).strip() and not str(col).strip().startswith("Unnamed") and str(col).strip() not in COLUMNAS_EXCLUIDAS_AUD_COMP and not df[col].dropna().empty]
         self._poblar_checklist_columnas(columnas)
 
     def _poblar_checklist_columnas(self, columnas):
@@ -836,76 +708,84 @@ class ConciliadorApp(tk.Tk):
             widget.destroy()
 
         self.column_vars = {}
+        self._filas_aud_ui = {}
+        self._columnas_aud_actuales = columnas
 
         if not columnas:
-            ttk.Label(
-                self.lista_columnas_aud.inner,
-                text="Selecciona un archivo y la hoja AUD-COMP para ver las columnas disponibles.",
-                style="SubheaderCard.TLabel"
-            ).pack(anchor="w", padx=4, pady=8)
+            ttk.Label(self.lista_columnas_aud.inner, text="Selecciona un archivo y la hoja AUD-COMP.", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
         else:
-            for idx, col in enumerate(columnas):
-                fondo_fila = PALETTE["surface"] if idx % 2 == 0 else PALETTE["surface_alt"]
+            for col in columnas:
+                fondo_fila = PALETTE["surface"]
                 fila = tk.Frame(self.lista_columnas_aud.inner, bg=fondo_fila)
-                fila.pack(fill=tk.X, pady=1)
-
-                contenido = tk.Frame(fila, bg=fondo_fila, padx=10, pady=7)
+                contenido = tk.Frame(fila, bg=fondo_fila, padx=12, pady=10)
                 contenido.pack(fill=tk.X)
 
-                # SOLUCIÓN VISUAL: Quitamos expand=True y fijamos un width para 
-                # mantener alineadas las casillas cerca del texto.
-                tk.Label(
-                    contenido, text=col, bg=fondo_fila, fg=PALETTE["text"],
-                    font=(self._font, 9), anchor="w", width=50
-                ).pack(side=tk.LEFT, padx=(0, 20))
+                lbl_col = tk.Label(contenido, text=col, bg=fondo_fila, fg=PALETTE["text"], font=(self._font, 10), anchor="w", width=55)
+                lbl_col.pack(side=tk.LEFT, padx=(0, 24))
 
                 vars_col = {}
                 for clave_cat, color in CATEGORY_COLORS.items():
                     var = tk.BooleanVar(value=False)
                     chip = self._crear_chip_toggle(contenido, color, var)
-                    chip.pack(side=tk.LEFT, padx=(6, 0))
+                    chip.pack(side=tk.LEFT, padx=(8, 0))
                     vars_col[clave_cat] = var
 
-                # SOLUCIÓN LÓGICA: Exclusión mutua entre IVA y BASE
                 var_iva = vars_col.get("iva")
                 var_base = vars_col.get("base")
                 var_retenedor = vars_col.get("autorretenedor")
 
                 if var_iva and var_base and var_retenedor:
-                    # Usamos una función constructora para evitar problemas de alcance (scope) en el ciclo for
                     def hacer_exclusivo(v_activa, v_otra, v_retenedor=None):
                         def _trace(*args):
-                            if v_activa.get():  # Si esta variable se enciende
-                                v_otra.set(False) # Apagamos la otra
-                                v_retenedor.set(False) if v_retenedor else None # Apagamos la otra si existe
+                            if v_activa.get(): 
+                                v_otra.set(False)
+                                v_retenedor.set(False) if v_retenedor else None
                         return _trace
-
-                    # Enlazamos los eventos a las variables
                     var_iva.trace_add("write", hacer_exclusivo(var_iva, var_base, var_retenedor))
                     var_base.trace_add("write", hacer_exclusivo(var_base, var_iva, var_retenedor))
                     var_retenedor.trace_add("write", hacer_exclusivo(var_retenedor, var_iva, var_base))
 
                 self.column_vars[col] = vars_col
+                self._filas_aud_ui[col] = (fila, contenido, lbl_col)
+            
+            if hasattr(self, "search_aud_var"):
+                self.search_aud_var.set("")
 
-        self.lista_columnas_aud.canvas.bind(
-            "<Configure>",
-            lambda e: self.lista_columnas_aud.canvas.itemconfigure(self.lista_columnas_aud._window, width=e.width)
-        )
+        self.lista_columnas_aud.canvas.bind("<Configure>", lambda e: self.lista_columnas_aud.canvas.itemconfigure(self.lista_columnas_aud._window, width=e.width))
         self.lista_columnas_aud._actualizar_scrollregion()
 
+    def _filtrar_columnas_aud(self, *args):
+            if not hasattr(self, '_filas_aud_ui') or not hasattr(self, '_columnas_aud_actuales'):
+                return
+
+            termino = self.search_aud_var.get().strip().lower()
+            visible_count = 0
+
+            for col in self._columnas_aud_actuales:
+                if col in self._filas_aud_ui:
+                    self._filas_aud_ui[col][0].pack_forget()
+
+            for col in self._columnas_aud_actuales:
+                if col not in self._filas_aud_ui:
+                    continue
+                
+                fila, contenido, lbl_col = self._filas_aud_ui[col]
+
+                if termino in col.lower():
+                    fondo = PALETTE["surface"] if visible_count % 2 == 0 else PALETTE["surface_alt"]
+                    fila.configure(bg=fondo)
+                    contenido.configure(bg=fondo)
+                    lbl_col.configure(bg=fondo)
+
+                    fila.pack(fill=tk.X, pady=1)
+                    visible_count += 1
+
+            self.lista_columnas_aud._actualizar_scrollregion()
+
     def _crear_chip_toggle(self, parent, color, var):
-        chip = tk.Label(
-            parent, text=" ", width=3, bg=PALETTE["border"], relief="flat",
-            cursor="hand2", font=(self._font, 8, "bold")
-        )
-
-        def _refrescar(*_):
-            chip.configure(bg=color if var.get() else PALETTE["border"])
-
-        def _toggle(_event=None):
-            var.set(not var.get())
-            _refrescar()
-
+        chip = tk.Label(parent, text=" ", width=4, bg=PALETTE["border_strong"], relief="flat", cursor="hand2", font=(self._font, 9, "bold"))
+        def _refrescar(*_): chip.configure(bg=color if var.get() else PALETTE["border_strong"])
+        def _toggle(_event=None): var.set(not var.get()); _refrescar()
         chip.bind("<Button-1>", _toggle)
         var.trace_add("write", _refrescar)
         _refrescar()
@@ -916,46 +796,29 @@ class ConciliadorApp(tk.Tk):
             vars_col[tipo].set(valor)
 
     def _build_tab_preview(self):
-        self.vista_previa = VistaPreviaExcel(self.tab_preview)
-        self.vista_previa.pack(fill=tk.BOTH, expand=True, padx=4, pady=(16, 4))
+        wrapper = ttk.Frame(self.tab_preview, padding=(0, 0, 0, 0), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Vista Previa del Archivo", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
+        self.vista_previa = VistaPreviaExcel(wrapper)
+        self.vista_previa.pack(fill=tk.BOTH, expand=True)
 
     def _build_tab_pivotar(self):
-        wrapper=ttk.Frame(self.tab_pivote_movimientos, padding=(4,16,4,4), style="TFrame")
-        wrapper.pack(fill=tk.BOTH,expand=True)
+        wrapper = ttk.Frame(self.tab_pivote_movimientos, padding=(0, 0, 0, 0), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Reestructuración de Movimientos", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-        ttk.Label(
-            wrapper,
-            text="Formatear movimientos",
-            style="CardHeader.TLabel"
-        ).pack(anchor="w",pady=(0,16))
-
-        card=self._card(wrapper,fill=tk.X,pady=(0,16))
-        ttk.Label(card,text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            card,
-            text="Selelecciona la hoja de movmientos",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(0,16))
-
+        card = self._card(wrapper, fill=tk.X, pady=(0, 20))
+        ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(card, text="Selecciona la hoja de movimientos para aplicar el formato.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
 
     def _build_tab_token(self):
-        wrapper = ttk.Frame(self.tab_token, padding=(4, 16, 4, 4), style="TFrame")
+        wrapper = ttk.Frame(self.tab_token, padding=(0, 0, 0, 0), style="TFrame")
         wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Formateo de Token", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-        ttk.Label(
-            wrapper,
-            text="Formateo de Token",
-            style="CardHeader.TLabel"
-        ).pack(anchor="w", pady=(0, 16))
-
-        card = self._card(wrapper, fill=tk.X, pady=(0, 16))
-
+        card = self._card(wrapper, fill=tk.X, pady=(0, 20))
         ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            card,
-            text="Selecciona la hoja de Token y, si aplica, Contabilidad y Terceros para asignar Concepto y Tercero.",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(4, 16))
+        ttk.Label(card, text="Selecciona la hoja de Token y, si aplica, Contabilidad y Terceros.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
 
         grid_frame = ttk.Frame(card, style="Card.TFrame")
         grid_frame.pack(fill=tk.X, anchor="n")
@@ -966,29 +829,19 @@ class ConciliadorApp(tk.Tk):
             es_opcional = clave in OPTIONAL_SHEETS
             lbl_texto = f"{etiqueta}" if es_opcional else f"{etiqueta}  *"
             estilo_lbl = "FieldLabelOptional.TLabel" if es_opcional else "FieldLabel.TLabel"
-
-            ttk.Label(grid_frame, text=lbl_texto, style=estilo_lbl).grid(row=i, column=0, sticky="w", pady=9, padx=(0, 24))
-
-            combo = ttk.Combobox(
-                grid_frame,
-                textvariable=self.sheet_vars[clave],
-                width=45,
-                state="readonly",
-                cursor="hand2"
-            )
-            combo.grid(row=i, column=1, sticky="ew", pady=9)
+            ttk.Label(grid_frame, text=lbl_texto, style=estilo_lbl).grid(row=i, column=0, sticky="w", pady=10, padx=(0, 30))
+            combo = ttk.Combobox(grid_frame, textvariable=self.sheet_vars[clave], width=50, state="readonly", cursor="hand2")
+            combo.grid(row=i, column=1, sticky="ew", pady=10)
             self.combos_token[clave] = combo
 
         grid_frame.columnconfigure(1, weight=1)
 
         fila_accion = ttk.Frame(card, style="Card.TFrame")
-        fila_accion.pack(fill=tk.X, pady=(20, 0))
-
+        fila_accion.pack(fill=tk.X, pady=(24, 0))
         self.btn_formatear_token = self._btn_primary(fila_accion, "🧾  Formatear Token", self._on_formatear_token)
         self.btn_formatear_token.pack(side=tk.LEFT)
-
         self.lbl_estado_token = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
-        self.lbl_estado_token.pack(side=tk.LEFT, padx=(16, 0))
+        self.lbl_estado_token.pack(side=tk.LEFT, padx=(20, 0))
 
     def _on_formatear_token(self):
         if self._procesando_token:
@@ -1051,126 +904,72 @@ class ConciliadorApp(tk.Tk):
         self._procesando_token = False
         self._set_btn_enabled(self.btn_formatear_token, True)
 
-
     def _build_tab_reportes_iva(self):
-        wrapper = ttk.Frame(self.tab_reportes_iva, padding=(4, 16, 4, 4), style="TFrame")
+        wrapper = ttk.Frame(self.tab_reportes_iva, padding=(0, 0, 0, 0), style="TFrame")
         wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Reportes de IVA", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-        ttk.Label(
-            wrapper,
-            text="Generación de Reportes de IVA",
-            style="CardHeader.TLabel"
-        ).pack(anchor="w", pady=(0, 16))
-
-        card = self._card(wrapper, fill=tk.X, pady=(0, 16))
-
+        card = self._card(wrapper, fill=tk.X, pady=(0, 20))
         ttk.Label(card, text="Configuración del Informe", style="CardHeader.TLabel").pack(anchor="w")
-        ttk.Label(
-            card,
-            text="Selecciona la hoja de token principal sobre la cual se generará el informe de IVA.",
-            style="SubheaderCard.TLabel"
-        ).pack(anchor="w", pady=(4, 16))
+        ttk.Label(card, text="Selecciona la hoja de token principal.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
 
         fila_hoja = ttk.Frame(card, style="Card.TFrame")
         fila_hoja.pack(fill=tk.X)
-
-        ttk.Label(fila_hoja, text="Hoja de token", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 24))
-
-        self.combo_hoja_iva = ttk.Combobox(
-            fila_hoja,
-            textvariable=self.hoja_iva_var,
-            width=45,
-            state="readonly",
-            cursor="hand2"
-        )
+        ttk.Label(fila_hoja, text="Hoja de token", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 30))
+        self.combo_hoja_iva = ttk.Combobox(fila_hoja, textvariable=self.hoja_iva_var, width=50, state="readonly", cursor="hand2")
         self.combo_hoja_iva.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         fila_accion = ttk.Frame(card, style="Card.TFrame")
-        fila_accion.pack(fill=tk.X, pady=(20, 0))
-
+        fila_accion.pack(fill=tk.X, pady=(24, 0))
         self.btn_generar_iva = self._btn_primary(fila_accion, "📊  Generar Informe", self._on_generar_informe_iva)
         self.btn_generar_iva.pack(side=tk.LEFT)
-
         self.lbl_estado_iva = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
-        self.lbl_estado_iva.pack(side=tk.LEFT, padx=(16, 0))
+        self.lbl_estado_iva.pack(side=tk.LEFT, padx=(20, 0))
 
         fila_pdf = ttk.Frame(card, style="Card.TFrame")
-        fila_pdf.pack(fill=tk.X, pady=(12, 0))
-
-        self.btn_exportar_pdf = ttk.Button(
-            fila_pdf, text="📄  Exportar a PDF", style="Secondary.TButton",
-            command=self._on_exportar_pdf_iva, cursor="hand2", state="disabled"
-        )
+        fila_pdf.pack(fill=tk.X, pady=(16, 0))
+        self.btn_exportar_pdf = ttk.Button(fila_pdf, text="📄  Exportar a PDF", style="Secondary.TButton", command=self._on_exportar_pdf_iva, cursor="hand2", state="disabled")
         self.btn_exportar_pdf.pack(side=tk.LEFT)
-
-        self.btn_vista_previa_pdf = ttk.Button(
-            fila_pdf, text="👁  Vista previa PDF", style="Secondary.TButton",
-            command=self._on_vista_previa_pdf, cursor="hand2", state="disabled"
-        )
-        self.btn_vista_previa_pdf.pack(side=tk.LEFT, padx=(10, 0))
+        self.btn_vista_previa_pdf = ttk.Button(fila_pdf, text="👁  Vista previa PDF", style="Secondary.TButton", command=self._on_vista_previa_pdf, cursor="hand2", state="disabled")
+        self.btn_vista_previa_pdf.pack(side=tk.LEFT, padx=(12, 0))
 
     def _build_tab_ejecucion(self):
-        contenedor = ttk.Frame(self.tab_ejecucion, padding=(4, 16, 4, 4), style="TFrame")
+        contenedor = ttk.Frame(self.tab_ejecucion, padding=(0, 0, 0, 0), style="TFrame")
         contenedor.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(contenedor, text="Ejecución y Registro (Logs)", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
         panel_acciones = ttk.Frame(contenedor, style="TFrame")
-        panel_acciones.pack(fill=tk.X, pady=(0, 16))
-
+        panel_acciones.pack(fill=tk.X, pady=(0, 20))
         self.btn_ejecutar = self._btn_primary(panel_acciones, "▶  Iniciar Conciliación", self._on_ejecutar)
         self.btn_ejecutar.pack(side=tk.LEFT)
-
-        btn_logs = ttk.Button(
-            panel_acciones,
-            text="📁  Abrir Carpeta de Logs",
-            style="Secondary.TButton",
-            command=self._on_abrir_logs,
-            cursor="hand2"
-        )
-        btn_logs.pack(side=tk.LEFT, padx=(12, 0))
+        btn_logs = ttk.Button(panel_acciones, text="📁  Abrir Logs", style="Secondary.TButton", command=self._on_abrir_logs, cursor="hand2")
+        btn_logs.pack(side=tk.LEFT, padx=(16, 0))
 
         self.progress = ttk.Progressbar(contenedor, mode="indeterminate", style="TProgressbar")
-        self.progress.pack(fill=tk.X, pady=(0, 16))
+        self.progress.pack(fill=tk.X, pady=(0, 20))
 
-        lbl_console = ttk.Label(contenedor, text="Registro de Actividad", style="Header.TLabel")
-        lbl_console.pack(anchor="w", pady=(0, 8))
-
-        frame_consola = tk.Frame(contenedor, bg=PALETTE["console_bg"], bd=0, highlightthickness=1,
-                                  highlightbackground=PALETTE["border"])
+        frame_consola = tk.Frame(contenedor, bg=PALETTE["console_bg"], bd=0, highlightthickness=1, highlightbackground=PALETTE["border_strong"])
         frame_consola.pack(fill=tk.BOTH, expand=True)
-
         self.txt_log = tk.Text(
-            frame_consola,
-            state="disabled",
-            height=18,
-            wrap="word",
-            bg=PALETTE["console_bg"],
-            fg=PALETTE["console_fg"],
-            insertbackground="#FFFFFF",
-            selectbackground="#2A3A5C",
-            font=("Consolas", 10),
-            relief="flat",
-            borderwidth=0,
-            padx=14,
-            pady=14
+            frame_consola, state="disabled", height=18, wrap="word", bg=PALETTE["console_bg"],
+            fg=PALETTE["console_fg"], insertbackground="#FFFFFF", selectbackground="#4F46E5",
+            font=("Consolas", 10), relief="flat", borderwidth=0, padx=20, pady=20
         )
         self.txt_log.pack(fill=tk.BOTH, expand=True)
 
     def _build_barra_estado(self):
-        contenedor = tk.Frame(self, bg=PALETTE["surface_alt"])
+        contenedor = tk.Frame(self.content_frame, bg=PALETTE["surface"])
         contenedor.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        top_line = tk.Frame(contenedor, bg=PALETTE["border"], height=1)
+        top_line.pack(fill=tk.X, side=tk.TOP)
 
-        self.lbl_estado_dot = ttk.Label(contenedor, text="●", style="StatusDot.TLabel", foreground=PALETTE["success"])
-        self.lbl_estado_dot.pack(side=tk.LEFT, padx=(14, 4), pady=6)
+        self.lbl_estado_dot = ttk.Label(contenedor, text="●", style="StatusDot.TLabel", foreground=PALETTE["success"], background=PALETTE["surface"])
+        self.lbl_estado_dot.pack(side=tk.LEFT, padx=(32, 6), pady=12)
 
-        self.lbl_estado = ttk.Label(
-            contenedor,
-            text="Listo",
-            anchor="w",
-            style="Status.TLabel"
-        )
+        self.lbl_estado = ttk.Label(contenedor, text="Listo", anchor="w", style="Status.TLabel", background=PALETTE["surface"])
         self.lbl_estado.pack(fill=tk.X, side=tk.LEFT)
 
-    # ------------------------------------------------------------ ACCIONES
     def _on_abrir_archivo(self):
         ruta = filedialog.askopenfilename(
             title="Selecciona el archivo de Excel",
@@ -1222,7 +1021,6 @@ class ConciliadorApp(tk.Tk):
         import os
         import subprocess
         import sys
-
         carpeta = LOG_FILE.parent
         carpeta.mkdir(parents=True, exist_ok=True)
         try:
@@ -1239,17 +1037,11 @@ class ConciliadorApp(tk.Tk):
     def _validar_entradas(self):
         if not self.file_path.get():
             raise ErrorUsuario("Primero debes seleccionar un archivo de Excel.")
-
         for clave in SHEET_ORDER:
-            if clave in OPTIONAL_SHEETS:
-                continue
+            if clave in OPTIONAL_SHEETS: continue
             valor = self.sheet_vars[clave].get().strip()
-            if not valor:
-                raise ErrorUsuario(f"Debes indicar el nombre de la hoja: {SHEET_LABELS[clave]}")
-            if valor not in self.hojas_disponibles:
-                raise ErrorUsuario(
-                    f"La hoja '{valor}' indicada para '{SHEET_LABELS[clave]}' no existe en el archivo."
-                )
+            if not valor: raise ErrorUsuario(f"Debes indicar el nombre de la hoja: {SHEET_LABELS[clave]}")
+            if valor not in self.hojas_disponibles: raise ErrorUsuario(f"La hoja '{valor}' indicada para '{SHEET_LABELS[clave]}' no existe.")
 
     def _on_ejecutar(self):
         if self._procesando:
@@ -1266,27 +1058,18 @@ class ConciliadorApp(tk.Tk):
         seriales_base2_seleccionados = [col for col, v in self.column_vars.items() if v["base2"].get()]
 
         if not seriales_iva_seleccionados or not seriales_base_seleccionados:
-            respuesta_vacia = messagebox.askyesno(
-                "Seriales incompletos",
-                "Has dejado una de las categorías de columnas vacía (sin marcar). ¿Deseas continuar?"
-            )
-            if not respuesta_vacia:
-                return
+            respuesta_vacia = messagebox.askyesno("Seriales incompletos", "Has dejado una de las categorías vacía. ¿Deseas continuar?")
+            if not respuesta_vacia: return
 
-        respuesta = messagebox.askyesno(
-            "Confirmar ejecución",
-            "Este proceso modificará el archivo de Excel seleccionado (se reescribirán "
-            "hojas de resultados). ¿Deseas continuar?"
-        )
-        if not respuesta:
-            return
+        respuesta = messagebox.askyesno("Confirmar", "Este proceso modificará el archivo. ¿Deseas continuar?")
+        if not respuesta: return
 
         self._procesando = True
         self._set_btn_enabled(self.btn_ejecutar, False)
         self.lbl_estado_dot.configure(foreground=PALETTE["primary"])
         self.progress.start(12)
         self._limpiar_log()
-        self.notebook.select(self.tab_ejecucion)
+        self.show_page("exec")
 
         sheet_names = {clave: var.get().strip() for clave, var in self.sheet_vars.items()}
 
@@ -1295,46 +1078,40 @@ class ConciliadorApp(tk.Tk):
             args=(
                 self.file_path.get(), sheet_names,
                 seriales_iva_seleccionados, seriales_base_seleccionados, seriales_base2_seleccionados
-            ),
-            daemon=True
+            ), daemon=True
         )
         hilo.start()
 
     def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2):
         conciliador = ConciliadorAuditoria(
-            ruta,
-            sheet_names,
-            seriales_iva=seriales_iva,
-            seriales_base=seriales_base,
-            seriales_base2=seriales_base2,
+            ruta, sheet_names, seriales_iva=seriales_iva,
+            seriales_base=seriales_base, seriales_base2=seriales_base2,
             progress_callback=self._on_progreso
         )
         try:
             resumen = conciliador.ejecutar()
             self._cola_eventos.put(("exito", resumen))
         except ErrorUsuario as e:
-            logger.warning(f"Error de usuario durante la ejecución: {e}")
+            logger.warning(f"Error de usuario: {e}")
             self._cola_eventos.put(("error_usuario", str(e)))
         except ErrorSistema as e:
-            logger.error(f"Error de sistema durante la ejecución: {e}")
+            logger.error(f"Error de sistema: {e}")
             self._cola_eventos.put(("error_sistema", str(e)))
         except Exception as e:
-            logger.exception("Error inesperado durante la ejecución")
+            logger.exception("Error inesperado")
             self._cola_eventos.put(("error_sistema", f"Error inesperado: {e}"))
+            
     def _on_progreso(self, mensaje):
         self._cola_eventos.put(("log", mensaje))
 
-    # ------------------------------------------------------------- COLA UI
     def _procesar_cola(self):
         try:
             while True:
-                # Agrega este bloque try-except interno
                 try:
                     tipo, payload = self._cola_eventos.get_nowait()
                 except queue.Empty:
-                    break  # Salimos del bucle while porque la cola ya está vacía
+                    break 
 
-                # A partir de aquí mantienes tu lógica original intacta
                 if tipo == "log":
                     self._agregar_log(payload)
                 elif tipo == "exito":
@@ -1344,36 +1121,31 @@ class ConciliadorApp(tk.Tk):
                         f"Personales excluidas: {payload['filas_personales']} | "
                         f"Sin pareja: {payload['filas_sin_pareja']}"
                     )
-                    messagebox.showinfo("Proceso completado", "La conciliación finalizó con éxito.")
+                    messagebox.showinfo("Completado", "La conciliación finalizó con éxito.")
                 elif tipo == "error_usuario":
                     self._finalizar_ejecucion(exito=False)
                     self._agregar_log(f"ERROR DE USUARIO: {payload}")
-                    messagebox.showwarning("Error en los datos", payload)
+                    messagebox.showwarning("Error", payload)
                 elif tipo == "error_sistema":
                     self._finalizar_ejecucion(exito=False)
                     self._agregar_log(f"ERROR DEL SISTEMA: {payload}")
-                    messagebox.showerror(
-                        "Error del sistema",
-                        f"{payload}\n\nRevisa el log para más detalles:\n{LOG_FILE}"
-                    )
+                    messagebox.showerror("Error", f"{payload}\n\nRevisa el log:\n{LOG_FILE}")
                 elif tipo == "token_log":
                     self.lbl_estado_token.configure(text=payload)
                 elif tipo == "token_exito":
                     self._finalizar_token()
-                    self.lbl_estado_token.configure(
-                        text=f"Filas: {payload['filas_procesadas']} | Personales: {payload['filas_personales']}"
-                    )
+                    self.lbl_estado_token.configure(text=f"Filas: {payload['filas_procesadas']} | Personales: {payload['filas_personales']}")
                     if self.file_path.get():
                         self.vista_previa.cargar_archivo(self.file_path.get(), self.hojas_disponibles)
-                    messagebox.showinfo("Token formateado", "La hoja de Token se formateó correctamente.")
+                    messagebox.showinfo("Token formateado", "Token formateado correctamente.")
                 elif tipo == "token_error_usuario":
                     self._finalizar_token()
                     self.lbl_estado_token.configure(text=f"Error: {payload}")
-                    messagebox.showwarning("Datos incompletos", payload)
+                    messagebox.showwarning("Error", payload)
                 elif tipo == "token_error_sistema":
                     self._finalizar_token()
                     self.lbl_estado_token.configure(text=f"Error: {payload}")
-                    messagebox.showerror("Error del sistema", payload)
+                    messagebox.showerror("Error", payload)
                 elif tipo == "iva_log":
                     self.lbl_estado_iva.configure(text=payload)
                 elif tipo == "iva_exito":
@@ -1382,34 +1154,31 @@ class ConciliadorApp(tk.Tk):
                     self.lbl_estado_iva.configure(text=f"IVA a pagar: {t['iva_a_pagar']:,.2f}")
                     self.btn_exportar_pdf.configure(state="normal")
                     self.btn_vista_previa_pdf.configure(state="normal")
-                    messagebox.showinfo(
-                        "Informe generado",
-                        "El informe de IVA se generó correctamente en la hoja 'Informe IVA'."
-                    )
-
+                    messagebox.showinfo("Informe generado", "Informe generado en la hoja 'Informe IVA'.")
                 elif tipo == "iva_error_usuario":
                     self._finalizar_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
-                    messagebox.showwarning("Datos incompletos", payload)
+                    messagebox.showwarning("Error", payload)
                 elif tipo == "iva_error_sistema":
                     self._finalizar_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
-                    messagebox.showerror("Error del sistema", payload)
+                    messagebox.showerror("Error", payload)
                 elif tipo == "pdf_iva_exito":
                     self._finalizar_pdf_iva()
                     self.lbl_estado_iva.configure(text=f"PDF exportado: {Path(payload).name}")
-                    messagebox.showinfo("PDF generado", f"El informe se exportó correctamente en:\n{payload}")
+                    messagebox.showinfo("PDF", f"Informe exportado en:\n{payload}")
                 elif tipo == "pdf_iva_error_usuario":
                     self._finalizar_pdf_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
-                    messagebox.showwarning("Datos incompletos", payload)
+                    messagebox.showwarning("Error", payload)
                 elif tipo == "pdf_iva_error_sistema":
                     self._finalizar_pdf_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
-                    messagebox.showerror("Error del sistema", payload)
+                    messagebox.showerror("Error", payload)
             pass
         finally:
             self.after(300, self._procesar_cola)
+            
     def _finalizar_ejecucion(self, exito=True):
         self._procesando = False
         self._set_btn_enabled(self.btn_ejecutar, True)
@@ -1433,24 +1202,23 @@ class ConciliadorApp(tk.Tk):
     def _set_estado(self, mensaje):
         self.lbl_estado.configure(text=f" {mensaje}")
 
-# gui.py — nueva clase (agregar antes de class ConciliadorApp)
-
 class VentanaVistaPreviaPDF(tk.Toplevel):
     def __init__(self, parent, ruta_pdf):
         super().__init__(parent)
         self.title("Vista previa - Informe de IVA")
-        self.geometry("980x760")
+        self.geometry("900x700")
         self.configure(bg=PALETTE["bg"])
         self.ruta_pdf = ruta_pdf
         self.pagina_actual = 0
         self._imagen_tk = None
+
         self.set_app_icon()
 
         import pymupdf as fitz
         self._fitz = fitz
         self.documento = fitz.open(ruta_pdf)
 
-        barra = ttk.Frame(self, style="TFrame", padding=10)
+        barra = ttk.Frame(self, style="TFrame", padding=14)
         barra.pack(fill=tk.X)
 
         self.btn_anterior = ttk.Button(
@@ -1460,7 +1228,7 @@ class VentanaVistaPreviaPDF(tk.Toplevel):
         self.btn_anterior.pack(side=tk.LEFT)
 
         self.lbl_pagina = ttk.Label(barra, text="", style="Subheader.TLabel")
-        self.lbl_pagina.pack(side=tk.LEFT, padx=12)
+        self.lbl_pagina.pack(side=tk.LEFT, padx=16)
 
         self.btn_siguiente = ttk.Button(
             barra, text="Siguiente ▶", style="Secondary.TButton",
@@ -1491,18 +1259,15 @@ class VentanaVistaPreviaPDF(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
         self._mostrar_pagina()
 
-
     def set_app_icon(self):
-        icon_path = Path(__file__).resolve().parent
-        icon_path = icon_path / "assets" / "icon.ico"
-
+        icon_path = Path(__file__).resolve().parent / "assets" / "icon.ico"
         if icon_path.exists():
             try:
                 self.iconbitmap(icon_path)
             except Exception as e:
                 logger.error(f"Error al establecer el icono de la aplicación: {e}")
         else:
-                logger.info("Icono de la aplicación establecido correctamente.")
+            logger.info("Icono de la aplicación establecido correctamente.")
 
     def _mostrar_pagina(self):
         pagina = self.documento[self.pagina_actual]

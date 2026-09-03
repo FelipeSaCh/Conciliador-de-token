@@ -112,7 +112,7 @@ class FormateadorToken:
                 f"Error leyendo la hoja principal: {e}"
             ) from e
 
-# -------------- CARGA DE CONTABILIDAD --------------
+## -------------- CARGA DE CONTABILIDAD --------------
         nombre_conta = self.sheet_names.get("contabilidad")
         if nombre_conta and nombre_conta in hojas_excel:
             try:
@@ -123,6 +123,12 @@ class FormateadorToken:
                 self._validar_columnas(
                     df_conta, self.COLUMNAS_REQUERIDAS_CONTA, nombre_conta
                 )
+                
+                # --- NUEVO: Limpiar filas vacías en medio de los datos ---
+                # Elimina nulos y cadenas vacías en la columna NIT para que continúe leyendo hacia abajo
+                df_conta = df_conta.dropna(subset=['NIT'])
+                df_conta = df_conta[df_conta['NIT'].astype(str).str.strip() != '']
+                
             except Exception as e:
                 logger.warning(
                     f"Error al procesar hoja de contabilidad '{nombre_conta}': {e}"
@@ -142,6 +148,11 @@ class FormateadorToken:
                 self._validar_columnas(
                     df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, nombre_tercer
                 )
+                
+                # --- NUEVO: Limpiar filas vacías en medio de los datos ---
+                df_tercer = df_tercer.dropna(subset=['NIT'])
+                df_tercer = df_tercer[df_tercer['NIT'].astype(str).str.strip() != '']
+                
             except Exception as e:
                 logger.warning(
                     f"Error al procesar hoja de terceros '{nombre_tercer}': {e}"
