@@ -39,7 +39,9 @@ COLUMNAS_DIAN_VS_CONT = [
     'Nombre Emisor', 'NIT Receptor', 'Nombre Receptor', 'BASE', 'IVA','BASE_2', 'Total', 'Estado', 'Grupo'
 ]
 
-COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle','Sumas','IVA','BASE']
+COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle','Sumas','IVA','BASE',"TIPO", "NUMERO", "CHEQ.NO",
+                                "NO.EXT", "AÑO", "MES", "DIA", "NIT", "TERCERO", "SUC.PTO", "DOCRELA", "CCOSTO", "SCCOSTO", "DETALLE", "Unnamed: 17", 
+                                "ELABORO", "REF1", "REF2", "REF3", "REF4", "No. AUTORIZACION(DATAFONO)"]
 
 OUTPUT_SHEETS_TO_HIDE = ['Resultados', 'auditoria', 'resultados-auditoria']
 
@@ -55,3 +57,10 @@ CATEGORY_COLORS = {
     "base2": "#33EAEA",
     "autorretenedor": "#cc99ff",
 }
+
+CARACTERES_ESPECIALES = [
+    ' ', '-', '_', '.', ',', ';', ':', '/', '\\', '|',
+    '!', '"', '#', '$', '%', '&', '(', ')', '=', '?', 
+    '¡', '¿', '+', '*', '~', '{', '}', '[', ']', '^', 
+    '`', '´', "'", '<', '>', '@'
+]

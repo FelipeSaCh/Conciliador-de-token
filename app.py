@@ -26,6 +26,10 @@ from preview_widget import VistaPreviaExcel
 from informes_iva import GeneradorInformeIVA
 from token_engine import FormateadorToken
 
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.styles import Alignment
+
 PALETTE = {
     "bg": "#F3F4F6",             
     "surface": "#FFFFFF",        
@@ -161,6 +165,12 @@ class ConciliadorApp(tk.Tk):
             self.hoja_iva_var.set("")
         if hasattr(self, "lbl_estado_iva"):
             self.lbl_estado_iva.configure(text="")
+        if hasattr(self, "combo_hoja_pivote"):
+            self.combo_hoja_pivote['values'] = []
+        if hasattr(self, "hoja_pivote_var"):
+            self.hoja_pivote_var.set("")
+        if hasattr(self, "lbl_estado_pivote"):
+            self.lbl_estado_pivote.configure(text="")
 
         for widget in self.tab_preview.winfo_children():
             widget.destroy()
@@ -803,13 +813,169 @@ class ConciliadorApp(tk.Tk):
         self.vista_previa.pack(fill=tk.BOTH, expand=True)
 
     def _build_tab_pivotar(self):
-        wrapper = ttk.Frame(self.tab_pivote_movimientos, padding=(0, 0, 0, 0), style="TFrame")
-        wrapper.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(wrapper, text="Reestructuración de Movimientos", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
+            wrapper = ttk.Frame(self.tab_pivote_movimientos, padding=(0, 0, 0, 0), style="TFrame")
+            wrapper.pack(fill=tk.BOTH, expand=True)
+            ttk.Label(wrapper, text="Reestructuración de Movimientos", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-        card = self._card(wrapper, fill=tk.X, pady=(0, 20))
-        ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
-        ttk.Label(card, text="Selecciona la hoja de movimientos para aplicar el formato.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
+            card = self._card(wrapper, fill=tk.X, pady=(0, 20))
+            ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
+            ttk.Label(card, text="Selecciona la hoja de movimientos para aplicar el formato.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
+
+            # Selector de la hoja
+            fila_hoja = ttk.Frame(card, style="Card.TFrame")
+            fila_hoja.pack(fill=tk.X)
+            ttk.Label(fila_hoja, text="Hoja de Movimientos", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 30))
+            
+            self.hoja_pivote_var = tk.StringVar()
+            self.combo_hoja_pivote = ttk.Combobox(fila_hoja, textvariable=self.hoja_pivote_var, width=50, state="readonly", cursor="hand2")
+            self.combo_hoja_pivote.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            # Botón y estado
+            fila_accion = ttk.Frame(card, style="Card.TFrame")
+            fila_accion.pack(fill=tk.X, pady=(24, 0))
+            
+            self.btn_pivotar = self._btn_primary(fila_accion, "⇆  Transformar y Exportar", self._on_pivotar_movimientos)
+            self.btn_pivotar.pack(side=tk.LEFT)
+            
+            self.lbl_estado_pivote = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
+            self.lbl_estado_pivote.pack(side=tk.LEFT, padx=(20, 0))
+            
+            self._procesando_pivote = False
+
+    def _on_pivotar_movimientos(self):
+        if self._procesando_pivote:
+            return
+        
+        if not self.file_path.get():
+            messagebox.showwarning("Archivo requerido", "Primero debes seleccionar un archivo de Excel.")
+            return
+            
+        hoja = self.hoja_pivote_var.get().strip()
+        if not hoja:
+            messagebox.showwarning("Hoja requerida", "Debes seleccionar la hoja de movimientos.")
+            return
+
+        # Pedir ruta para guardar el archivo resultante
+        ruta_salida = filedialog.asksaveasfilename(
+            title="Guardar Movimientos Transformados",
+            defaultextension=".xlsx",
+            initialfile="Movimientos_Transformados.xlsx",
+            filetypes=[("Archivos de Excel", "*.xlsx")]
+        )
+        
+        if not ruta_salida:
+            return
+
+        self._procesando_pivote = True
+        self._set_btn_enabled(self.btn_pivotar, False)
+        self.lbl_estado_pivote.configure(text="Transformando movimientos...")
+
+        hilo = threading.Thread(
+            target=self._pivotar_en_hilo,
+            args=(self.file_path.get(), hoja, ruta_salida),
+            daemon=True
+        )
+        hilo.start()
+
+    def _pivotar_en_hilo(self, ruta_entrada, hoja, ruta_salida):
+        try:
+            self._cola_eventos.put(("pivote_log", "Leyendo la hoja de movimientos..."))
+            df = pd.read_excel(ruta_entrada, sheet_name=hoja)
+            
+            self._cola_eventos.put(("pivote_log", "Verificando columnas..."))
+            cols_requeridas = ['DEBITO', 'CREDITO', 'CUENTA', 'NOM. CUENTA']
+            faltantes = [col for col in cols_requeridas if col not in df.columns]
+            
+            if faltantes:
+                raise ErrorUsuario(f"La hoja seleccionada no tiene las columnas requeridas: {', '.join(faltantes)}")
+
+            self._cola_eventos.put(("pivote_log", "Aplicando transformaciones y pivotando..."))
+            
+            # --- Lógica de transformación ---
+            df['DEBITO'] = pd.to_numeric(df['DEBITO'], errors='coerce').fillna(0)
+            df['CREDITO'] = pd.to_numeric(df['CREDITO'], errors='coerce').fillna(0)
+            df['VALOR_NETO'] = df['DEBITO'] - df['CREDITO']
+            df['CUENTA_CONCAT'] = df['CUENTA'].astype(str) + ' - ' + df['NOM. CUENTA'].astype(str)
+
+            cols_a_excluir = ['CUENTA', 'NOM. CUENTA', 'CUENTA_CONCAT', 'DEBITO', 'CREDITO', 'VALOR_NETO']
+            cols_indice = [col for col in df.columns if col not in cols_a_excluir]
+
+            df[cols_indice] = df[cols_indice].fillna('')
+
+            df_pivot = pd.pivot_table(
+                df,
+                index=cols_indice,
+                columns='CUENTA_CONCAT',
+                values='VALOR_NETO',
+                aggfunc='sum',
+                fill_value=0
+            )
+
+            df_final = df_pivot.reset_index()
+            df_final.columns.name = None
+            
+            self._cola_eventos.put(("pivote_log", "Guardando archivo Excel..."))
+            self._cola_eventos.put(("pivote_log", "Aplicando formato de tabla, moneda y ajustando celdas..."))
+            
+            # Usar ExcelWriter con openpyxl para editar el formato
+            with pd.ExcelWriter(ruta_salida, engine='openpyxl') as writer:
+                df_final.to_excel(writer, index=False, sheet_name='Movimientos')
+                worksheet = writer.sheets['Movimientos']
+                
+                max_row = df_final.shape[0] + 1
+                max_col = df_final.shape[1]
+                num_cols_indice = len(cols_indice)
+                
+                # 1. Ajustar columnas, envolver texto en encabezados y formato de moneda
+                for idx, col in enumerate(df_final.columns, start=1):
+                    col_letter = get_column_letter(idx)
+                    
+                    # --- Ajuste de Ancho ---
+                    if idx <= num_cols_indice:
+                        # Para las columnas base: ajustamos al texto más largo
+                        longitud_datos = df_final[col].astype(str).map(len).max() if not df_final.empty else 0
+                        max_len = max(longitud_datos, len(str(col)))
+                        worksheet.column_dimensions[col_letter].width = min(max_len + 2, 45)
+                    else:
+                        # Para las columnas pivotadas (Cuentas): ancho fijo para forzar que el título baje
+                        worksheet.column_dimensions[col_letter].width = 20
+                        
+                        # Aplicar formato de moneda (COP) a los valores de esta cuenta
+                        for row in range(2, max_row + 1):
+                            worksheet.cell(row=row, column=idx).number_format = '"$" #,##0.00'
+
+                    # --- Formato del Encabezado (Forzar que el texto baje si es muy largo) ---
+                    celda_encabezado = worksheet.cell(row=1, column=idx)
+                    celda_encabezado.alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
+                
+                # Aumentar la altura de la fila 1 para acomodar los nombres de cuentas en varias líneas
+                worksheet.row_dimensions[1].height = 50
+                
+                # 2. Aplicar formato de Tabla de Excel
+                rango_tabla = f"A1:{get_column_letter(max_col)}{max_row}"
+                tabla = Table(displayName="TablaMovimientos", ref=rango_tabla)
+                estilo = TableStyleInfo(
+                    name="TableStyleMedium2", showFirstColumn=False,
+                    showLastColumn=False, showRowStripes=True, showColumnStripes=False
+                )
+                tabla.tableStyleInfo = estilo
+                worksheet.add_table(tabla)
+                
+                # 3. Fijar SOLAMENTE los encabezados (Fila 1)
+                worksheet.freeze_panes = "A2"
+
+            self._cola_eventos.put(("pivote_log", "Guardado finalizado exitosamente."))
+            self._cola_eventos.put(("pivote_exito", ruta_salida))
+            
+        except ErrorUsuario as e:
+            self._cola_eventos.put(("pivote_error_usuario", str(e)))
+        except Exception as e:
+            logger.exception("Error al pivotar movimientos")
+            self._cola_eventos.put(("pivote_error_sistema", f"Ocurrió un error inesperado: {e}"))
+
+    def _finalizar_pivote(self):
+        self._procesando_pivote = False
+        self._set_btn_enabled(self.btn_pivotar, True)
 
     def _build_tab_token(self):
         wrapper = ttk.Frame(self.tab_token, padding=(0, 0, 0, 0), style="TFrame")
@@ -1015,6 +1181,11 @@ class ConciliadorApp(tk.Tk):
         if self.hoja_iva_var.get() not in self.hojas_disponibles:
             self.hoja_iva_var.set(self.hojas_disponibles[0] if self.hojas_disponibles else "")
 
+        if hasattr(self, "combo_hoja_pivote"):
+            self.combo_hoja_pivote['values'] = self.hojas_disponibles
+            if self.hoja_pivote_var.get() not in self.hojas_disponibles:
+                self.hoja_pivote_var.set(self.hojas_disponibles[0] if self.hojas_disponibles else "")
+
         self._set_estado(f"Archivo cargado: {Path(ruta).name} ({len(self.hojas_disponibles)} hojas)")
 
     def _on_abrir_logs(self):
@@ -1174,6 +1345,20 @@ class ConciliadorApp(tk.Tk):
                 elif tipo == "pdf_iva_error_sistema":
                     self._finalizar_pdf_iva()
                     self.lbl_estado_iva.configure(text=f"Error: {payload}")
+                    messagebox.showerror("Error", payload)
+                elif tipo == "pivote_log":
+                    self.lbl_estado_pivote.configure(text=payload)
+                elif tipo == "pivote_exito":
+                    self._finalizar_pivote()
+                    self.lbl_estado_pivote.configure(text="¡Transformación exitosa!")
+                    messagebox.showinfo("Éxito", f"El archivo ha sido guardado en:\n{payload}")
+                elif tipo == "pivote_error_usuario":
+                    self._finalizar_pivote()
+                    self.lbl_estado_pivote.configure(text=f"Error: {payload}")
+                    messagebox.showwarning("Faltan datos", payload)
+                elif tipo == "pivote_error_sistema":
+                    self._finalizar_pivote()
+                    self.lbl_estado_pivote.configure(text="Error de procesamiento")
                     messagebox.showerror("Error", payload)
             pass
         finally:

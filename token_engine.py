@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 from openpyxl.styles import PatternFill, Font
 from openpyxl.utils import get_column_letter
-
+from openpyxl.worksheet.table import Table
+from openpyxl import load_workbook
 from config import RED_FILL_COLOR
 from errors import ColumnaFaltanteError, ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
 
@@ -67,135 +68,152 @@ class FormateadorToken:
                 raise ColumnaFaltanteError(nombre_hoja, col)
 
     def ejecutar(self):
-        if not self.file_path.exists():
-            raise ErrorUsuario(f"El archivo no existe: {self.file_path}")
+            if not self.file_path.exists():
+                raise ErrorUsuario(f"El archivo no existe: {self.file_path}")
 
-        try:
-            xls = pd.ExcelFile(self.file_path)
-        except Exception as e:
-            raise ErrorSistema(
-                f"No se pudo abrir el archivo Excel: {e}"
-            ) from e
-
-        hojas_excel = xls.sheet_names
-        nombre_principal = self.sheet_names.get("principal")
-        if not nombre_principal:
-            raise ErrorUsuario(
-                "No se especificó el nombre de la hoja 'principal'."
-            )
-        if nombre_principal not in hojas_excel:
-            raise HojaNoEncontradaError(nombre_principal, hojas_excel)
-
-        self._reportar("Cargando hoja principal (Token)...")
-        try:
-            df_principal = pd.read_excel(
-                self.file_path, sheet_name=nombre_principal
-            )
-            df_principal = self._limpiar_encabezados(df_principal)
-
-            # --- LIMPIEZA DE FILAS COMPLETAMENTE VACÍAS ---
-            df_principal = df_principal.dropna(how="all").reset_index(drop=True)
-
-            self._validar_columnas(
-                df_principal,
-                self.COLUMNAS_REQUERIDAS_PRINCIPAL,
-                nombre_principal,
-            )
-            
-            # Guardamos las columnas originales exactas (sin contar las que calculamos nosotros)
-            # Para garantizar la sobrescritura y no duplicarlas al exportar
-            COLUMNAS_CALCULADAS = ["CONCEPTO", "TERCERO", "TIPO", "TIPO-DETALLE", "BASE", "Num.Ext"]
-            cols_originales = [c for c in df_principal.columns if c not in COLUMNAS_CALCULADAS]
-            
-        except Exception as e:
-            raise ErrorSistema(
-                f"Error leyendo la hoja principal: {e}"
-            ) from e
-
-## -------------- CARGA DE CONTABILIDAD --------------
-        nombre_conta = self.sheet_names.get("contabilidad")
-        if nombre_conta and nombre_conta in hojas_excel:
             try:
-                # Usamos el lector dinámico buscando la columna 'NIT'
-                df_conta = self._leer_hoja_dinamica(self.file_path, nombre_conta, keyword="NIT")
-                df_conta = self._limpiar_encabezados(df_conta, mayus=True)
-                
+                xls = pd.ExcelFile(self.file_path)
+            except Exception as e:
+                raise ErrorSistema(
+                    f"No se pudo abrir el archivo Excel: {e}"
+                ) from e
+
+            hojas_excel = xls.sheet_names
+            nombre_principal = self.sheet_names.get("principal")
+            if not nombre_principal:
+                raise ErrorUsuario(
+                    "No se especificó el nombre de la hoja 'principal'."
+                )
+            if nombre_principal not in hojas_excel:
+                raise HojaNoEncontradaError(nombre_principal, hojas_excel)
+
+            self._reportar("Cargando hoja principal (Token)...")
+            try:
+                df_principal = pd.read_excel(
+                    self.file_path, sheet_name=nombre_principal
+                )
+                df_principal = self._limpiar_encabezados(df_principal)
+
+                # --- LIMPIEZA DE FILAS COMPLETAMENTE VACÍAS ---
+                df_principal = df_principal.dropna(how="all").reset_index(drop=True)
+
                 self._validar_columnas(
-                    df_conta, self.COLUMNAS_REQUERIDAS_CONTA, nombre_conta
+                    df_principal,
+                    self.COLUMNAS_REQUERIDAS_PRINCIPAL,
+                    nombre_principal,
                 )
                 
-                # --- NUEVO: Limpiar filas vacías en medio de los datos ---
-                # Elimina nulos y cadenas vacías en la columna NIT para que continúe leyendo hacia abajo
-                df_conta = df_conta.dropna(subset=['NIT'])
-                df_conta = df_conta[df_conta['NIT'].astype(str).str.strip() != '']
+                # NUEVO: Guardamos TODAS las columnas en su orden original exacto
+                columnas_originales_completas = df_principal.columns.tolist()
+                
+                COLUMNAS_CALCULADAS = ["CONCEPTO", "TERCERO", "TIPO", "TIPO-DETALLE", "BASE", "Num.Ext"]
+                COLUMNAS_CALC_UPPER = [c.upper() for c in COLUMNAS_CALCULADAS]
                 
             except Exception as e:
-                logger.warning(
-                    f"Error al procesar hoja de contabilidad '{nombre_conta}': {e}"
-                )
+                raise ErrorSistema(
+                    f"Error leyendo la hoja principal: {e}"
+                ) from e
+
+            # -------------- CARGA DE CONTABILIDAD --------------
+            nombre_conta = self.sheet_names.get("contabilidad")
+            if nombre_conta and nombre_conta in hojas_excel:
+                try:
+                    df_conta = self._leer_hoja_dinamica(self.file_path, nombre_conta, keyword="NIT")
+                    df_conta = self._limpiar_encabezados(df_conta, mayus=True)
+                    
+                    self._validar_columnas(
+                        df_conta, self.COLUMNAS_REQUERIDAS_CONTA, nombre_conta
+                    )
+                    
+                    df_conta = df_conta.dropna(subset=['NIT'])
+                    df_conta = df_conta[df_conta['NIT'].astype(str).str.strip() != '']
+                    
+                except Exception as e:
+                    logger.warning(
+                        f"Error al procesar hoja de contabilidad '{nombre_conta}': {e}"
+                    )
+                    df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
+            else:
                 df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
-        else:
-            df_conta = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_CONTA)
 
-        # -------------- CARGA DE TERCEROS --------------
-        nombre_tercer = self.sheet_names.get("terceros")
-        if nombre_tercer and nombre_tercer in hojas_excel:
-            try:
-                # Usamos el lector dinámico buscando la columna 'NIT'
-                df_tercer = self._leer_hoja_dinamica(self.file_path, nombre_tercer, keyword="NIT")
-                df_tercer = self._limpiar_encabezados(df_tercer, mayus=True)
-                
-                self._validar_columnas(
-                    df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, nombre_tercer
-                )
-                
-                # --- NUEVO: Limpiar filas vacías en medio de los datos ---
-                df_tercer = df_tercer.dropna(subset=['NIT'])
-                df_tercer = df_tercer[df_tercer['NIT'].astype(str).str.strip() != '']
-                
-            except Exception as e:
-                logger.warning(
-                    f"Error al procesar hoja de terceros '{nombre_tercer}': {e}"
-                )
-                df_tercer = pd.DataFrame(
-                    columns=self.COLUMNAS_REQUERIDAS_TERCEROS
-                )
-        else:
-            df_tercer = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_TERCEROS)
+            # -------------- CARGA DE TERCEROS --------------
+            nombre_tercer = self.sheet_names.get("terceros")
+            if nombre_tercer and nombre_tercer in hojas_excel:
+                try:
+                    df_tercer = self._leer_hoja_dinamica(self.file_path, nombre_tercer, keyword="NIT")
+                    df_tercer = self._limpiar_encabezados(df_tercer, mayus=True)
+                    
+                    self._validar_columnas(
+                        df_tercer, self.COLUMNAS_REQUERIDAS_TERCEROS, nombre_tercer
+                    )
+                    
+                    df_tercer = df_tercer.dropna(subset=['NIT'])
+                    df_tercer = df_tercer[df_tercer['NIT'].astype(str).str.strip() != '']
+                    
+                except Exception as e:
+                    logger.warning(
+                        f"Error al procesar hoja de terceros '{nombre_tercer}': {e}"
+                    )
+                    df_tercer = pd.DataFrame(
+                        columns=self.COLUMNAS_REQUERIDAS_TERCEROS
+                    )
+            else:
+                df_tercer = pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_TERCEROS)
 
-        self._reportar("Cruzando datos entre hojas...")
-        df_full = self._cruzar_datos(df_principal, df_conta, df_tercer)
+            self._reportar("Cruzando datos entre hojas...")
+            df_full = self._cruzar_datos(df_principal, df_conta, df_tercer)
 
-        self._reportar("Calculando bases, totales y consecutivos...")
-        df_full, es_personales = self._calcular_campos(df_full)
+            self._reportar("Calculando bases, totales y consecutivos...")
+            df_full, es_personales = self._calcular_campos(df_full)
 
-        self._reportar(
-            "Ordenando registros por Grupo, Tipo de Documento y Personales..."
-        )
-        
-        cols_export = cols_originales + COLUMNAS_CALCULADAS
-        df_export = df_full[cols_export].copy()
+            self._reportar(
+                "Ordenando registros por Grupo, Tipo de Documento y Personales..."
+            )
+            
+            # --- NUEVO: RECONSTRUCCIÓN DEL ORDEN DE COLUMNAS ---
+            # Si TERCERO y CONCEPTO ya existían, los mantenemos en su posición
+            # original reemplazando sus datos. Si son nuevas, las enviamos al final.
+            cols_export = []
+            calculadas_insertadas = set()
 
-        # Guardar marca de personales para mantener sincronizada la mascara de pintado
-        df_export["_ES_PERSONAL"] = es_personales.values
+            for col in columnas_originales_completas:
+                col_upper = str(col).upper()
+                if col_upper in COLUMNAS_CALC_UPPER:
+                    # La columna ya existía. Tomamos la generada limpia para reemplazar su posición
+                    idx = COLUMNAS_CALC_UPPER.index(col_upper)
+                    nombre_nuevo = COLUMNAS_CALCULADAS[idx]
+                    cols_export.append(nombre_nuevo)
+                    calculadas_insertadas.add(nombre_nuevo)
+                else:
+                    # Columnas normales
+                    cols_export.append(col)
+            
+            # Añadir al final las columnas calculadas que no existían originalmente
+            for col in COLUMNAS_CALCULADAS:
+                if col not in calculadas_insertadas:
+                    cols_export.append(col)
 
-        # --- ORDENAMIENTO POR JERARQUÍA ---
-        df_export = self._ordenar_jerarquico(df_export)
+            df_export = df_full[cols_export].copy()
 
-        es_personales_ordenado = df_export["_ES_PERSONAL"]
-        df_export = df_export.drop(columns="_ES_PERSONAL")
+            # Guardar marca de personales para mantener sincronizada la mascara de pintado
+            df_export["_ES_PERSONAL"] = es_personales.values
 
-        self._reportar("Escribiendo hoja Token formateada...")
-        self._escribir_excel(
-            nombre_principal, df_export, es_personales_ordenado
-        )
+            # --- ORDENAMIENTO POR JERARQUÍA ---
+            df_export = self._ordenar_jerarquico(df_export)
 
-        self._reportar("Formateo de Token completado con éxito.")
-        return {
-            "filas_procesadas": len(df_export),
-            "filas_personales": int(es_personales_ordenado.sum()),
-        }
+            es_personales_ordenado = df_export["_ES_PERSONAL"]
+            df_export = df_export.drop(columns="_ES_PERSONAL")
 
+            self._reportar("Escribiendo hoja Token formateada...")
+            self._escribir_excel(
+                nombre_principal, df_export, es_personales_ordenado
+            )
+
+            self._reportar("Formateo de Token completado con éxito.")
+            return {
+                "filas_procesadas": len(df_export),
+                "filas_personales": int(es_personales_ordenado.sum()),
+            }
     @staticmethod
     def _ordenar_jerarquico(df):
         """Aplica el ordenamiento por Grupo, Tipo de Documento y registros Personales."""
@@ -267,10 +285,13 @@ class FormateadorToken:
         df_tercer = df_tercer.copy()
 
         # --- VERDADERA SOBRESCRITURA ---
-        # Si estas columnas ya existen en la hoja original, las borramos antes de cruzar
-        # para que Pandas las recalcule limpiamente sin crear "CONCEPTO_x" o "CONCEPTO_y".
-        cols_a_sobrescribir = ['CONCEPTO', 'TERCERO', 'TIPO', 'TIPO-DETALLE', 'NIT_Cruce']
-        df_principal = df_principal.drop(columns=[c for c in cols_a_sobrescribir if c in df_principal.columns], errors='ignore')
+        # Detectamos si TERCERO, CONCEPTO (y otras) existen en la hoja original.
+        # Si existen, ELIMINAMOS por completo su contenido (drop) para que el cruce
+        # reemplace los datos desde cero sin crear columnas duplicadas (CONCEPTO_x, etc).
+        cols_a_sobrescribir_upper = ['CONCEPTO', 'TERCERO', 'TIPO', 'TIPO-DETALLE', 'NIT_CRUCE']
+        
+        cols_a_borrar = [c for c in df_principal.columns if str(c).upper() in cols_a_sobrescribir_upper]
+        df_principal = df_principal.drop(columns=cols_a_borrar, errors='ignore')    
 
         # --- LÓGICA CONDICIONAL DE NIT (Emitido vs Recibido) ---
         grupo_clean = df_principal['Grupo'].fillna('').astype(str).str.strip().str.upper()
@@ -349,7 +370,25 @@ class FormateadorToken:
 
     def _escribir_excel(self, nombre_principal, df_export, es_personales):
         try:
-            with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            tabla_info_principal = None
+            try:
+                wb_check = load_workbook(self.file_path)
+                if nombre_principal in wb_check.sheetnames:
+                    ws_check = wb_check[nombre_principal]
+                    if ws_check.tables:
+                        nombre_tabla, tbl_check = next(iter(ws_check.tables.items()))
+                        tabla_info_principal = (
+                            nombre_tabla, tbl_check.headerRowCount,
+                            tbl_check.totalsRowCount, tbl_check.tableStyleInfo
+                        )
+                wb_check.close()
+            except Exception:
+                tabla_info_principal = None
+
+            engine_kwargs = {'keep_vba': True} if self.file_path.suffix.lower() == '.xlsm' else {}
+
+            with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace',
+                                 engine_kwargs=engine_kwargs) as writer:
                 df_export.to_excel(writer, index=False, sheet_name=nombre_principal)
                 sheet = writer.sheets[nombre_principal]
 
@@ -366,6 +405,14 @@ class FormateadorToken:
                     cell.font = header_font
 
                 sheet.freeze_panes = 'A2'
+                if tabla_info_principal:
+                    nombre_tabla, header_rc, totals_rc, style_info = tabla_info_principal
+                    ref_nuevo = f"A1:{get_column_letter(len(df_export.columns))}{len(df_export) + 1}"
+                    nueva_tabla = Table(displayName=nombre_tabla, ref=ref_nuevo)
+                    nueva_tabla.headerRowCount = header_rc
+                    nueva_tabla.totalsRowCount = totals_rc
+                    nueva_tabla.tableStyleInfo = style_info
+                    sheet.add_table(nueva_tabla)                
 
                 for col in sheet.columns:
                     max_len = 0
