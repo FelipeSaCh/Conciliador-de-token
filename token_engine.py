@@ -365,7 +365,10 @@ class FormateadorToken:
 
         df['BASE'] = np.where(df['Total'] == 0, 0, (df['Total'] - df['IVA']))
 
-        es_personales = df['TIPO'].astype(str).str.strip().str.upper() == 'PERSONALES'
+        # CAMBIO AQUÍ: Buscar si contiene "PERSONAL" o "PERSONALES"
+        tipo_str = df['TIPO'].astype(str).str.strip().str.upper()
+        es_personales = tipo_str.str.contains('PERSONAL', na=False, regex=False)
+        
         return df, es_personales
 
     def _escribir_excel(self, nombre_principal, df_export, es_personales):
@@ -388,15 +391,33 @@ class FormateadorToken:
             engine_kwargs = {'keep_vba': True} if self.file_path.suffix.lower() == '.xlsm' else {}
 
             with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace',
-                                 engine_kwargs=engine_kwargs) as writer:
+                                engine_kwargs=engine_kwargs) as writer:
                 df_export.to_excel(writer, index=False, sheet_name=nombre_principal)
                 sheet = writer.sheets[nombre_principal]
 
-                red_fill = PatternFill(start_color=RED_FILL_COLOR, end_color=RED_FILL_COLOR, fill_type="solid")
+                # --- Estilos y colores (tu código existente) ---
+                personal_fill = PatternFill(start_color="FFCCFF", end_color="FFCCFF", fill_type="solid")
+                red_font = Font(color="FF0000")
+                
+                col_tipo_doc = None
+                for idx, col_name in enumerate(df_export.columns, start=1):
+                    if col_name.upper() in ["TIPO DE DOCUMENTO", "TIPO DOCUMENTO"]:
+                        col_tipo_doc = idx
+                        break
+
                 for row_idx, es_pers in enumerate(es_personales, start=2):
                     if es_pers:
                         for col_idx in range(1, len(df_export.columns) + 1):
-                            sheet.cell(row=row_idx, column=col_idx).fill = red_fill
+                            sheet.cell(row=row_idx, column=col_idx).fill = personal_fill
+                    
+                    if col_tipo_doc:
+                        tipo_doc_cell = sheet.cell(row=row_idx, column=col_tipo_doc)
+                        if tipo_doc_cell.value:
+                            tipo_doc_str = str(tipo_doc_cell.value).strip().upper()
+                            if "NOTA DE CREDITO" in tipo_doc_str.replace("É", "E"):
+                                for col_idx in range(1, len(df_export.columns) + 1):
+                                    cell = sheet.cell(row=row_idx, column=col_idx)
+                                    cell.font = red_font
 
                 header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
                 header_font = Font(bold=True, color="FFFFFF")
@@ -405,6 +426,7 @@ class FormateadorToken:
                     cell.font = header_font
 
                 sheet.freeze_panes = 'A2'
+                
                 if tabla_info_principal:
                     nombre_tabla, header_rc, totals_rc, style_info = tabla_info_principal
                     ref_nuevo = f"A1:{get_column_letter(len(df_export.columns))}{len(df_export) + 1}"
@@ -412,23 +434,41 @@ class FormateadorToken:
                     nueva_tabla.headerRowCount = header_rc
                     nueva_tabla.totalsRowCount = totals_rc
                     nueva_tabla.tableStyleInfo = style_info
-                    sheet.add_table(nueva_tabla)                
+                    sheet.add_table(nueva_tabla)
 
-                for col in sheet.columns:
-                    max_len = 0
-                    col_letter = get_column_letter(col[0].column)
-                    for cell in col:
+                # --- AJUSTE AUTOMÁTICO MEJORADO ---
+                for column_cells in sheet.columns:
+                    # Obtener la longitud máxima de los valores en la columna
+                    max_length = 0
+                    column_letter = get_column_letter(column_cells[0].column)
+                    
+                    for cell in column_cells:
                         try:
                             if cell.value:
-                                max_len = max(max_len, len(str(cell.value)))
-                        except Exception:
+                                # Considerar también la longitud del encabezado
+                                length = len(str(cell.value))
+                                if length > max_length:
+                                    max_length = length
+                        except:
                             pass
-                    sheet.column_dimensions[col_letter].width = max(max_len + 2, 10)
+                    
+                    # Ajustar ancho con margen y mínimo
+                    adjusted_width = max_length + 2
+                    # Si es muy pequeño, usar mínimo 10
+                    if adjusted_width < 10:
+                        adjusted_width = 10
+                    # Si es muy grande, limitar a 50 (opcional)
+                    # if adjusted_width > 50:
+                    #     adjusted_width = 50
+                    
+                    sheet.column_dimensions[column_letter].width = adjusted_width
 
+                # Columnas ocultas
                 COLUMNAS_OCULTAS = {'TIPO', 'TIPO-DETALLE', 'BASE', 'Num.Ext'}
                 for idx, col_name in enumerate(df_export.columns, start=1):
                     if col_name in COLUMNAS_OCULTAS:
                         sheet.column_dimensions[get_column_letter(idx)].hidden = True
+                        
         except (ErrorUsuario, ErrorSistema):
             raise
         except Exception as e:

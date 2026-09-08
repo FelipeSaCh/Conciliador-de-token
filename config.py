@@ -22,6 +22,7 @@ SHEET_LABELS = {
     "terceros": "Hoja Terceros",
     "aud_comp": "Hoja Auditoría Comprobantes (AUD-COMP)",
     "autorretenedores": "Hoja Autorretenedores (opcional)",
+    "auditoria de ventas": "Hoja Auditoría de Ventas (opcional)",
 }
 
 ORDEN_AUDITORIA = ["Tipo	Número", "Num.Ext", "Fecha", "Nit/C.C.", "Tercero","BASE","IVA", "Detalle"]
@@ -64,3 +65,5 @@ CARACTERES_ESPECIALES = [
     '¡', '¿', '+', '*', '~', '{', '}', '[', ']', '^', 
     '`', '´', "'", '<', '>', '@'
 ]
+
+DUPLICADO_FILL_COLOR = "FF6B6B"
