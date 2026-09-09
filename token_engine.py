@@ -355,17 +355,14 @@ class FormateadorToken:
         folio_texto = df['Folio'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True)
         num_ext_base = prefijo_texto + folio_texto
 
-        prefijo_esta_vacio = df['Prefijo'].isna() | (df['Prefijo'].astype(str).str.strip() == '')
-
-        df['Num.Ext'] = np.where(
-            prefijo_esta_vacio,
-            num_ext_base.str.zfill(10),
-            num_ext_base
-        )
+        # --- SE ELIMINÓ LA CONDICIÓN Y EL RELLENO DE CEROS (.zfill(10)) ---
+        # El Num.Ext queda exactamente como viene (Prefijo + Folio)
+        # El motor de auditoría se encargará de ignorar los ceros a la izquierda al comparar
+        df['Num.Ext'] = num_ext_base
 
         df['BASE'] = np.where(df['Total'] == 0, 0, (df['Total'] - df['IVA']))
 
-        # CAMBIO AQUÍ: Buscar si contiene "PERSONAL" o "PERSONALES"
+        # Buscar si contiene "PERSONAL" o "PERSONALES"
         tipo_str = df['TIPO'].astype(str).str.strip().str.upper()
         es_personales = tipo_str.str.contains('PERSONAL', na=False, regex=False)
         

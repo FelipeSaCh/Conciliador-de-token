@@ -1,3 +1,4 @@
+
 import queue
 import threading
 import tkinter as tk
@@ -52,54 +53,60 @@ PALETTE = {
     "console_fg": "#F8FAFC",     
 }
 
-class ScrollableChecklist(ttk.Frame):
-    def __init__(self, parent, height=170, **kwargs):
-        super().__init__(parent, style="Card.TFrame", **kwargs)
-        self._xls_actual=None
-        self.canvas = tk.Canvas(
-            self, bg=PALETTE["surface"], highlightthickness=0, bd=0, height=height
-        )
+class ScrollableTab(ttk.Frame):
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, style="TFrame", **kwargs)
+        self.canvas = tk.Canvas(self, bg=PALETTE["bg"], highlightthickness=0, bd=0)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
+        self.inner = ttk.Frame(self.canvas, style="TFrame")
 
-        self._scroll_job = None
-        self.inner.bind("<Configure>", self._on_inner_configure)
+        # Ajuste dinámico de tamaño
         self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.canvas.bind(
-            "<Configure>",
-            lambda e: self.canvas.itemconfigure(self._window, width=e.width)
-        )
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._window, width=e.width))
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
+        # Bindings para la rueda del ratón
         self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
         self.canvas.bind_all("<Button-4>", self._on_wheel, add="+")
         self.canvas.bind_all("<Button-5>", self._on_wheel, add="+")
 
-    def _on_inner_configure(self, _event):
-        if self._scroll_job is not None:
-            self.after_cancel(self._scroll_job)
-        self._scroll_job = self.after(30, self._actualizar_scrollregion)
-
-    def _actualizar_scrollregion(self):
-        self._scroll_job = None
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
     def _on_wheel(self, event):
+        # Verifica que el ratón esté sobre esta pestaña
         widget = self.winfo_containing(event.x_root, event.y_root)
         w = widget
         while w is not None and w is not self:
             w = w.master
         if w is not self:
             return
+            
         if getattr(event, "num", None) == 4:
             self.canvas.yview_scroll(-3, "units")
         elif getattr(event, "num", None) == 5:
             self.canvas.yview_scroll(3, "units")
         else:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
+
+class ScrollableChecklist(ttk.Frame):
+    def __init__(self, parent, height=None, **kwargs):
+        super().__init__(parent, style="Card.TFrame", **kwargs)
+        # Contenedor interno que se expandirá a tamaño completo
+        self.inner = ttk.Frame(self, style="Card.TFrame")
+        self.inner.pack(fill="both", expand=True)
+        
+        # Atributos "Dummy" (falsos) para no romper tu código en _poblar_checklist_columnas
+        self.canvas = tk.Frame(self) 
+        self.canvas.itemconfigure = lambda *args, **kwargs: None
+        self._window = None
+
+    def _actualizar_scrollregion(self):
+        # Ya no hace nada, delegamos el scroll al ScrollableTab general
+        pass
+
+
 
 class ConciliadorApp(tk.Tk):
     def __init__(self):
@@ -123,6 +130,8 @@ class ConciliadorApp(tk.Tk):
         self._procesando = False
         self._generador_iva=None
         self._procesando_pdf_iva = False
+        self.column_vars = {}
+        self.column_vars_dc = {}
         self.current_page = None
 
         self._setup_styles()
@@ -157,7 +166,9 @@ class ConciliadorApp(tk.Tk):
         if hasattr(self, "lbl_estado_token"):
             self.lbl_estado_token.configure(text="")
 
+
         self._poblar_checklist_columnas([])
+        self._poblar_checklist_columnas_dc([])
         
         if hasattr(self, "combo_hoja_iva"):
             self.combo_hoja_iva['values'] = []
@@ -614,7 +625,9 @@ class ConciliadorApp(tk.Tk):
         )
 
     def _build_tab_config(self):
-            wrapper = ttk.Frame(self.tab_config, padding=(0, 0, 0, 0), style="TFrame")
+            scroll_tab = ScrollableTab(self.tab_config)
+            scroll_tab.pack(fill=tk.BOTH, expand=True)
+            wrapper = ttk.Frame(scroll_tab.inner, padding=(0, 0, 0, 0), style="TFrame")
             wrapper.pack(fill=tk.BOTH, expand=True)
 
             ttk.Label(wrapper, text="Configuración para Auditoría", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
@@ -649,6 +662,8 @@ class ConciliadorApp(tk.Tk):
 
                 if clave == "aud_comp":
                     combo.bind("<<ComboboxSelected>>", self._refrescar_columnas_aud_comp)
+                elif clave == "Aud_dc":
+                    combo.bind("<<ComboboxSelected>>", self._refrescar_columnas_aud_dc)
 
                 if es_opcional:
                     btn_limpiar = tk.Button(
@@ -684,6 +699,26 @@ class ConciliadorApp(tk.Tk):
             self.lista_columnas_aud.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
             self._poblar_checklist_columnas([])
 
+            card_seriales_dc = self._card(col_der, fill=tk.BOTH, expand=True, pady=(16, 0))
+            ttk.Label(card_seriales_dc, text="Configuración de Seriales - Devoluciones", style="CardHeader.TLabel").pack(anchor="w")
+            ttk.Label(card_seriales_dc, text="Marca a qué categoría(s) pertenece cada columna de la hoja de Auditoría de Devoluciones.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 0))
+
+            barra_toggle_dc = ttk.Frame(card_seriales_dc, style="Card.TFrame")
+            barra_toggle_dc.pack(fill=tk.X, pady=(20, 12))
+            self._build_leyenda_categorias(barra_toggle_dc)
+
+            fila_buscador_dc = ttk.Frame(card_seriales_dc, style="Card.TFrame")
+            fila_buscador_dc.pack(fill=tk.X, pady=(4, 12))
+            ttk.Label(fila_buscador_dc, text="🔍 Buscar cuenta:", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 12))
+
+            self.search_aud_dc_var = tk.StringVar()
+            self.search_aud_dc_var.trace_add("write", self._filtrar_columnas_aud_dc)
+            ttk.Entry(fila_buscador_dc, textvariable=self.search_aud_dc_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self.lista_columnas_aud_dc = ScrollableChecklist(card_seriales_dc, height=220)
+            self.lista_columnas_aud_dc.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+            self._poblar_checklist_columnas_dc([])
+
     def _build_leyenda_categorias(self, parent):
         for etiqueta, color in (
             ("IVA", CATEGORY_COLORS["iva"]),
@@ -712,6 +747,101 @@ class ConciliadorApp(tk.Tk):
         columnas = [str(col).strip() for col in df.columns if str(col).strip() and not str(col).strip().startswith("Unnamed") and str(col).strip() not in COLUMNAS_EXCLUIDAS_AUD_COMP and not df[col].dropna().empty]
         self._poblar_checklist_columnas(columnas)
 
+    def _refrescar_columnas_aud_dc(self, *_):
+        ruta = self.file_path.get()
+        hoja = self.sheet_vars["Aud_dc"].get().strip()
+        if not ruta or not hoja or hoja not in self.hojas_disponibles:
+            self._poblar_checklist_columnas_dc([])
+            return
+
+        try:
+            df = ConciliadorAuditoria._cargar_hoja_con_encabezado_variable(ruta, hoja)
+        except Exception as e:
+            logger.warning(f"No se pudieron leer las columnas de Devoluciones: {e}")
+            self._poblar_checklist_columnas_dc([])
+            return
+
+        columnas = [str(col).strip() for col in df.columns if str(col).strip() and not str(col).strip().startswith("Unnamed") and str(col).strip() not in COLUMNAS_EXCLUIDAS_AUD_COMP and not df[col].dropna().empty]
+        self._poblar_checklist_columnas_dc(columnas)
+
+    def _poblar_checklist_columnas_dc(self, columnas):
+        self.lista_columnas_aud_dc.canvas.unbind("<Configure>")
+        for widget in self.lista_columnas_aud_dc.inner.winfo_children():
+            widget.destroy()
+
+        self.column_vars_dc = {}
+        self._filas_aud_dc_ui = {}
+        self._columnas_aud_dc_actuales = columnas
+
+        if not columnas:
+            ttk.Label(self.lista_columnas_aud_dc.inner, text="Selecciona un archivo y la hoja de Devoluciones.", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
+        else:
+            for col in columnas:
+                fondo_fila = PALETTE["surface"]
+                fila = tk.Frame(self.lista_columnas_aud_dc.inner, bg=fondo_fila)
+                contenido = tk.Frame(fila, bg=fondo_fila, padx=12, pady=10)
+                contenido.pack(fill=tk.X)
+
+                lbl_col = tk.Label(contenido, text=col, bg=fondo_fila, fg=PALETTE["text"], font=(self._font, 10), anchor="w", width=55)
+                lbl_col.pack(side=tk.LEFT, padx=(0, 24))
+
+                vars_col = {}
+                for clave_cat, color in CATEGORY_COLORS.items():
+                    var = tk.BooleanVar(value=False)
+                    chip = self._crear_chip_toggle(contenido, color, var)
+                    chip.pack(side=tk.LEFT, padx=(8, 0))
+                    vars_col[clave_cat] = var
+
+                var_iva = vars_col.get("iva")
+                var_base = vars_col.get("base")
+                var_retenedor = vars_col.get("autorretenedor")
+
+                if var_iva and var_base and var_retenedor:
+                    def hacer_exclusivo(v_activa, v_otra, v_retenedor=None):
+                        def _trace(*args):
+                            if v_activa.get():
+                                v_otra.set(False)
+                                v_retenedor.set(False) if v_retenedor else None
+                        return _trace
+                    var_iva.trace_add("write", hacer_exclusivo(var_iva, var_base, var_retenedor))
+                    var_base.trace_add("write", hacer_exclusivo(var_base, var_iva, var_retenedor))
+                    var_retenedor.trace_add("write", hacer_exclusivo(var_retenedor, var_iva, var_base))
+
+                self.column_vars_dc[col] = vars_col
+                self._filas_aud_dc_ui[col] = (fila, contenido, lbl_col)
+
+            if hasattr(self, "search_aud_dc_var"):
+                self.search_aud_dc_var.set("")
+
+        self.lista_columnas_aud_dc.canvas.bind("<Configure>", lambda e: self.lista_columnas_aud_dc.canvas.itemconfigure(self.lista_columnas_aud_dc._window, width=e.width))
+        self.lista_columnas_aud_dc._actualizar_scrollregion()
+
+    def _filtrar_columnas_aud_dc(self, *args):
+        if not hasattr(self, '_filas_aud_dc_ui') or not hasattr(self, '_columnas_aud_dc_actuales'):
+            return
+
+        termino = self.search_aud_dc_var.get().strip().lower()
+        visible_count = 0
+
+        for col in self._columnas_aud_dc_actuales:
+            if col in self._filas_aud_dc_ui:
+                self._filas_aud_dc_ui[col][0].pack_forget()
+
+        for col in self._columnas_aud_dc_actuales:
+            if col not in self._filas_aud_dc_ui:
+                continue
+
+            fila, contenido, lbl_col = self._filas_aud_dc_ui[col]
+
+            if termino in col.lower():
+                fondo = PALETTE["surface"] if visible_count % 2 == 0 else PALETTE["surface_alt"]
+                fila.configure(bg=fondo)
+                contenido.configure(bg=fondo)
+                lbl_col.configure(bg=fondo)
+                fila.pack(fill=tk.X, pady=1)
+                visible_count += 1
+
+        self.lista_columnas_aud_dc._actualizar_scrollregion()
     def _poblar_checklist_columnas(self, columnas):
         self.lista_columnas_aud.canvas.unbind("<Configure>")
         for widget in self.lista_columnas_aud.inner.winfo_children():
@@ -1228,6 +1358,10 @@ class ConciliadorApp(tk.Tk):
         seriales_base_seleccionados = [col for col, v in self.column_vars.items() if v["base"].get()]
         seriales_base2_seleccionados = [col for col, v in self.column_vars.items() if v["base2"].get()]
 
+        seriales_iva_dc_seleccionados = [col for col, v in self.column_vars_dc.items() if v["iva"].get()]
+        seriales_base_dc_seleccionados = [col for col, v in self.column_vars_dc.items() if v["base"].get()]
+        seriales_base2_dc_seleccionados = [col for col, v in self.column_vars_dc.items() if v["base2"].get()]
+
         if not seriales_iva_seleccionados or not seriales_base_seleccionados:
             respuesta_vacia = messagebox.askyesno("Seriales incompletos", "Has dejado una de las categorías vacía. ¿Deseas continuar?")
             if not respuesta_vacia: return
@@ -1248,15 +1382,19 @@ class ConciliadorApp(tk.Tk):
             target=self._ejecutar_en_hilo,
             args=(
                 self.file_path.get(), sheet_names,
-                seriales_iva_seleccionados, seriales_base_seleccionados, seriales_base2_seleccionados
+                seriales_iva_seleccionados, seriales_base_seleccionados, seriales_base2_seleccionados,
+                seriales_iva_dc_seleccionados, seriales_base_dc_seleccionados, seriales_base2_dc_seleccionados
             ), daemon=True
         )
         hilo.start()
 
-    def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2):
+    def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2,
+                           seriales_iva_dc, seriales_base_dc, seriales_base2_dc):
         conciliador = ConciliadorAuditoria(
             ruta, sheet_names, seriales_iva=seriales_iva,
             seriales_base=seriales_base, seriales_base2=seriales_base2,
+            seriales_iva_dc=seriales_iva_dc, seriales_base_dc=seriales_base_dc,
+            seriales_base2_dc=seriales_base2_dc,
             progress_callback=self._on_progreso
         )
         try:

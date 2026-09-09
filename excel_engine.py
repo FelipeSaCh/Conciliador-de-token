@@ -1,5 +1,6 @@
 # auditoria_engine.py
 import re
+import difflib
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +15,8 @@ from errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
 
 class ConciliadorAuditoria:
     def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None,
-                 seriales_base2=None, seriales_ret=None, progress_callback=None):
+                 seriales_base2=None, seriales_ret=None, seriales_iva_dc=None,
+                 seriales_base_dc=None, seriales_base2_dc=None, progress_callback=None):
         self.file_path = Path(file_path)
         self.sheet_names = sheet_names
         self.progress_callback = progress_callback or (lambda mensaje: None)
@@ -22,6 +24,9 @@ class ConciliadorAuditoria:
         self.seriales_base = seriales_base if seriales_base is not None else []
         self.seriales_base2 = seriales_base2 if seriales_base2 is not None else []
         self.seriales_ret = seriales_ret if seriales_ret is not None else []
+        self.seriales_iva_dc = seriales_iva_dc if seriales_iva_dc is not None else []
+        self.seriales_base_dc = seriales_base_dc if seriales_base_dc is not None else []
+        self.seriales_base2_dc = seriales_base2_dc if seriales_base2_dc is not None else []
 
     def _reportar(self, mensaje):
         logger.info(mensaje)
@@ -63,30 +68,37 @@ class ConciliadorAuditoria:
             raise ErrorSistema(f"Error leyendo la hoja '{sheet}' con encabezado variable: {e}") from e
 
     @staticmethod
-    def _detectar_duplicados(df, columna_num_ext):
+    def _normalizar_num_ext(serie, patron_regex):
         """
-        Detecta registros duplicados basados en Num.Ext (limpio)
-        Retorna: mascara booleana con True para duplicados
+        Normaliza Num.Ext para comparación/emparejamiento:
+        limpia caracteres especiales, espacios y TODOS los ceros
+        (no solo los ceros a la izquierda), para que valores como
+        "4305289599" y "43052895990" se consideren equivalentes
+        independientemente de dónde caiga el cero adicional.
         """
-        # Crear columna limpia para comparación
-        patron_regex = f"[{re.escape(''.join(CARACTERES_ESPECIALES))}]"
-        
-        num_ext_clean = (
-            df[columna_num_ext]
+        return (
+            serie
             .fillna('')
             .astype(str)
             .str.replace(patron_regex, '', regex=True)
             .str.strip()
-            .str.replace(r'^0+(?=.)', '', regex=True) # <-- NUEVO: Ignora ceros a la izquierda
+            .str.replace('0', '', regex=False)
         )
-        
-        # Filtrar valores vacíos
+
+    @staticmethod
+    def _detectar_duplicados(df, columna_num_ext):
+        """
+        Detecta registros duplicados basados en Num.Ext (limpio)
+        """
+        patron_regex = f"[{re.escape(''.join(CARACTERES_ESPECIALES))}]"
+
+        num_ext_clean = ConciliadorAuditoria._normalizar_num_ext(df[columna_num_ext], patron_regex)
+
         mask_no_vacio = num_ext_clean != ''
-        
-        # Detectar duplicados (incluyendo primera ocurrencia)
         mask_duplicados = num_ext_clean.duplicated(keep=False) & mask_no_vacio
         
         return mask_duplicados
+
     @staticmethod
     def _extraer_concepto_personal(valor_tipo):
         """
@@ -99,29 +111,23 @@ class ConciliadorAuditoria:
         valor_str = str(valor_tipo).strip().upper()
         
         # Buscar el texto que contiene "PERSONAL"
-        # Posibles formatos: "PERSONAL - CONCEPTO", "CONCEPTO PERSONAL", etc.
         if 'PERSONAL' in valor_str:
-            # Si hay guión, tomar la parte después del guión
             if ' - ' in valor_str:
                 partes = valor_str.split(' - ')
-                # Tomar la parte que NO es "PERSONAL"
                 for parte in partes:
                     if 'PERSONAL' not in parte:
                         return parte.strip()
             
-            # Si está al inicio: "PERSONAL CONCEPTO"
             if valor_str.startswith('PERSONAL'):
                 resto = valor_str.replace('PERSONAL', '').strip()
                 if resto:
                     return resto
             
-            # Si está al final: "CONCEPTO PERSONAL"
             if valor_str.endswith('PERSONAL'):
                 resto = valor_str.replace('PERSONAL', '').strip()
                 if resto:
                     return resto
             
-            # Si solo es "PERSONAL"
             return 'PERSONAL'
         
         return 'Gasto Personal'
@@ -168,26 +174,31 @@ class ConciliadorAuditoria:
             df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
 
         self._reportar("Filtrando registros y mapeando motivos de diferencias...")
+        nombre_dc = self.sheet_names.get('Aud_dc')
+        df_aud_dc = None
+        if nombre_dc and nombre_dc in hojas_excel:
+            try:
+                df_aud_dc = self._cargar_hoja_con_encabezado_variable(self.file_path, nombre_dc)
+                df_aud_dc = self._limpiar_encabezados(df_aud_dc)
+                df_aud_dc = df_aud_dc.dropna(subset=df_aud_dc.columns[:6], how='all').copy()
+            except Exception as e:
+                logger.warning(f"No se pudo leer la hoja de auditoría de devoluciones '{nombre_dc}': {e}")
+                df_aud_dc = None
         
         # --- EXCLUSIÓN DEFINITIVA DE EMITIDOS Y APPLICATION RESPONSE ---
-
-        # 1. Filtrar "Emitido" si existe la columna 'grupo'
         col_grupo = next((c for c in df_full.columns if str(c).strip().lower() == 'grupo'), None)
         if col_grupo:
             mask_emi = df_full[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
             df_full = df_full[~mask_emi]
 
-        # 2. Filtrar "Application response" si existe la columna 'tipo de documento'
         col_doc = next((c for c in df_full.columns if str(c).strip().lower() == 'tipo de documento'), None)
         if col_doc:
             mask_app_response = df_full[col_doc].astype(str).str.contains('Application response', case=False, na=False)
             df_full = df_full[~mask_app_response]
 
-        # Resetear índice al final de todas las exclusiones
         df_full = df_full.reset_index(drop=True)
 
         # --- 1. MAPEO DE RAZONES DE EXCLUSIÓN PARA DIAN ---
-# --- 1. MAPEO DE RAZONES DE EXCLUSIÓN PARA DIAN ---
         df_full['DETALLE'] = ''
 
         # --- DETECCIÓN DE DUPLICADOS EN TOKEN ---
@@ -196,17 +207,9 @@ class ConciliadorAuditoria:
             df_full.loc[mask_duplicados_token & (df_full['DETALLE'] == ''), 'DETALLE'] = 'DIAN - DUPLICADO'
             self._reportar(f"Se detectaron {mask_duplicados_token.sum()} registros duplicados en Token")
 
-        # Detectar personales (buscamos en la columna TIPO)
         es_personales_full = df_full['TIPO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
-
-        # Asignar DETALLE para personales usando el valor de la columna CONCEPTO
-        # Solo para registros que NO tengan otro detalle asignado (como DUPLICADO)
         mask_personales_sin_detalle = es_personales_full & (df_full['DETALLE'] == '')
-
         df_full.loc[mask_personales_sin_detalle, 'DETALLE'] = 'DIAN: ' + df_full.loc[mask_personales_sin_detalle, 'CONCEPTO'].astype(str)
-
-        # Si ya tenía algún detalle previo que no sea personal, mantenerlo
-        # (los duplicados ya se asignaron antes y tienen prioridad)
 
         mask_ignorar = pd.Series(False, index=df_full.index)
 
@@ -239,8 +242,10 @@ class ConciliadorAuditoria:
         )
 
         self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
-        df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial = self._unificar_dian_vs_cont(
-            df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores
+        df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial, dif_nit, nombre_emisor_group, prefix_doc_group = self._unificar_dian_vs_cont(
+            df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores,
+            df_aud_dc=df_aud_dc, seriales_iva_dc=self.seriales_iva_dc,
+            seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc
         )
 
         self._reportar("Escribiendo resultados en el archivo Excel...")
@@ -253,7 +258,10 @@ class ConciliadorAuditoria:
             df_autoretenedores=df_autoretenedores,
             dif_base=dif_base,
             dif_iva=dif_iva,
-            tiene_caracter_especial=tiene_caracter_especial  # Nueva
+            tiene_caracter_especial=tiene_caracter_especial,
+            dif_nit=dif_nit,
+            nombre_emisor_group=nombre_emisor_group,
+            prefix_doc_group=prefix_doc_group
         )
         self._reportar("Proceso completado con éxito.")
         return {
@@ -263,7 +271,7 @@ class ConciliadorAuditoria:
         }
 
     @staticmethod
-    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2, seriales_ret=None):
+    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2, seriales_ret=None, es_devolucion=False):
         cols_iva = [col for col in seriales_iva if col in df_aud_comp.columns]
         cols_base = [col for col in seriales_base if col in df_aud_comp.columns]
         cols_base2 = [col for col in seriales_base2 if col in df_aud_comp.columns]
@@ -273,26 +281,152 @@ class ConciliadorAuditoria:
         df_res_auditoria['Num.Ext'] = (
             df_aud_comp['Num.Ext'].fillna('').astype(str) if 'Num.Ext' in df_aud_comp.columns else ''
         )
+        
+        # NUEVO: Definir el multiplicador basado en el origen de la hoja
+        multiplicador = 1 if es_devolucion else -1
+
         df_res_auditoria['IVA'] = (
-            df_aud_comp[cols_iva].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1 if cols_iva else 0
+            df_aud_comp[cols_iva].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_iva else 0
         )
         df_res_auditoria['BASE'] = (
-            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1 if cols_base else 0
+            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_base else 0
         )
         df_res_auditoria['BASE_2'] = (
-            df_aud_comp[cols_base2].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * -1 if cols_base2 else 0
+            df_aud_comp[cols_base2].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_base2 else 0
         )
         return df_res_auditoria[['Num.Ext', 'BASE', 'BASE_2', 'IVA']]
-
     @staticmethod
-    def _unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores):
+    def _conciliar_con_devoluciones(df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex):
+        # Añadimos es_devolucion=True a la llamada
+        df_res_dc = ConciliadorAuditoria._procesar_aud_comp(
+            df_aud_dc, seriales_iva_dc or [], seriales_base_dc or [], seriales_base2_dc or [], es_devolucion=True
+        )
+
+        df_dc_prep = pd.DataFrame()
+        df_dc_prep['Tipo de documento'] = df_aud_dc['Tipo'] if 'Tipo' in df_aud_dc.columns else ''
+        if 'Número' in df_aud_dc.columns:
+            df_dc_prep['CUFE/CUDE'] = df_aud_dc['Número'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        else:
+            df_dc_prep['CUFE/CUDE'] = ''
+
+        df_dc_prep['Num.Ext'] = df_aud_dc['Num.Ext'] if 'Num.Ext' in df_aud_dc.columns else ''
+        df_dc_prep['Num.Ext_Original'] = df_dc_prep['Num.Ext']
+        df_dc_prep['Num.Ext_Clean'] = ConciliadorAuditoria._normalizar_num_ext(df_dc_prep['Num.Ext'], patron_regex)
+        df_dc_prep['Tiene_Caracter_Especial'] = (
+            df_dc_prep['Num.Ext_Original'].fillna('').astype(str).str.contains(patron_regex, regex=True, na=False)
+        )
+
+        mask_dup_dc = False
+        if 'Num.Ext' in df_aud_dc.columns:
+            num_ext_clean_dc = ConciliadorAuditoria._normalizar_num_ext(df_aud_dc['Num.Ext'], patron_regex)
+            mask_dup_dc = num_ext_clean_dc.duplicated(keep=False) & (num_ext_clean_dc != '')
+
+        df_dc_prep['DETALLE'] = np.where(
+            mask_dup_dc, 'DEVOL - DUPLICADO',
+            np.where(df_dc_prep['Num.Ext_Clean'] == '', 'DEVOL - Sin Num.Ext', '')
+        )
+
+        df_dc_prep['Fecha'] = df_aud_dc['Fecha'] if 'Fecha' in df_aud_dc.columns else ''
+        df_dc_prep['NIT Emisor'] = df_aud_dc['Nit/C.C.'] if 'Nit/C.C.' in df_aud_dc.columns else ''
+        df_dc_prep['Nombre Emisor'] = df_aud_dc['Tercero'] if 'Tercero' in df_aud_dc.columns else ''
+        df_dc_prep['BASE'] = df_res_dc['BASE']
+        df_dc_prep['BASE_2'] = df_res_dc['BASE_2']
+        df_dc_prep['IVA'] = df_res_dc['IVA']
+        df_dc_prep['Prioridad_Fila'] = 3
+        df_dc_prep['Conteo_Pareja'] = 1
+        df_dc_prep['Fue_Fuzzy_Match'] = False
+
+        for col in COLUMNAS_DIAN_VS_CONT:
+            if col not in df_dc_prep.columns:
+                df_dc_prep[col] = ''
+
+        mask_dian_pendiente = (df_unificado['Prioridad_Fila'] == 1) & (df_unificado['DETALLE'] == 'DIAN - Sin Pareja en Contabilidad')
+        dian_idx = df_unificado[mask_dian_pendiente].index.tolist()
+        dc_matchable_mask = df_dc_prep['DETALLE'] == ''
+        dc_idx = df_dc_prep[dc_matchable_mask].index.tolist()
+
+        emparejados_dian = set()
+        emparejados_dc = set()
+
+        dc_por_clave = {}
+        for i in dc_idx:
+            clave = df_dc_prep.at[i, 'Num.Ext_Clean']
+            if clave:
+                dc_por_clave.setdefault(clave, []).append(i)
+
+        for d_idx in dian_idx:
+            clave = df_unificado.at[d_idx, 'Num.Ext_Clean']
+            candidatos = [c for c in dc_por_clave.get(clave, []) if c not in emparejados_dc]
+            if candidatos:
+                c_idx = candidatos[0]
+                emparejados_dian.add(d_idx)
+                emparejados_dc.add(c_idx)
+                df_unificado.at[d_idx, 'DETALLE'] = ''
+                df_dc_prep.at[c_idx, 'DETALLE'] = ''
+
+        dian_restantes = [i for i in dian_idx if i not in emparejados_dian]
+        dc_restantes = [i for i in dc_idx if i not in emparejados_dc]
+
+        if dian_restantes and dc_restantes:
+            nit_dian = {i: str(df_unificado.at[i, 'NIT Emisor']).replace('.0', '').strip() for i in dian_restantes}
+            nit_dc = {i: str(df_dc_prep.at[i, 'NIT Emisor']).replace('.0', '').strip() for i in dc_restantes}
+
+            matches = []
+            for d_idx in dian_restantes:
+                base_d = pd.to_numeric(df_unificado.at[d_idx, 'BASE'], errors='coerce')
+                base_d = 0.0 if pd.isna(base_d) else base_d
+                str_d = df_unificado.at[d_idx, 'Num.Ext_Clean']
+                for c_idx in dc_restantes:
+                    if not nit_dian[d_idx] or nit_dian[d_idx] != nit_dc[c_idx]:
+                        continue
+                    base_c = pd.to_numeric(df_dc_prep.at[c_idx, 'BASE'], errors='coerce')
+                    base_c = 0.0 if pd.isna(base_c) else base_c
+                    if abs(base_d - base_c) > 50.0:
+                        continue
+                    str_c = df_dc_prep.at[c_idx, 'Num.Ext_Clean']
+                    sim = difflib.SequenceMatcher(None, str_d, str_c).ratio()
+                    if str_d.replace('0', '') == str_c.replace('0', '') and str_d.replace('0', '') != '':
+                        sim = max(sim, 0.95)
+                    if (str_d in str_c or str_c in str_d) and len(str_d) > 2 and len(str_c) > 2:
+                        sim = max(sim, 0.90)
+                    if sim > 0.40:
+                        matches.append((sim, d_idx, c_idx))
+
+            matches.sort(key=lambda x: x[0], reverse=True)
+            for sim, d_idx, c_idx in matches:
+                if d_idx not in emparejados_dian and c_idx not in emparejados_dc:
+                    nueva_clave = f"{df_unificado.at[d_idx, 'Num.Ext_Clean']}_DEVOL_{d_idx}"
+                    df_unificado.at[d_idx, 'Num.Ext_Clean'] = nueva_clave
+                    df_dc_prep.at[c_idx, 'Num.Ext_Clean'] = nueva_clave
+                    df_unificado.at[d_idx, 'DETALLE'] = ''
+                    df_dc_prep.at[c_idx, 'DETALLE'] = ''
+                    df_unificado.at[d_idx, 'Fue_Fuzzy_Match'] = True
+                    df_dc_prep.at[c_idx, 'Fue_Fuzzy_Match'] = True
+                    emparejados_dian.add(d_idx)
+                    emparejados_dc.add(c_idx)
+
+        for d_idx in dian_idx:
+            if d_idx not in emparejados_dian:
+                df_unificado.at[d_idx, 'DETALLE'] = 'DIAN - Sin Pareja en Contabilidad ni Devoluciones'
+
+        mask_dc_sin_pareja = dc_matchable_mask & (~df_dc_prep.index.isin(emparejados_dc))
+        df_dc_prep.loc[mask_dc_sin_pareja, 'DETALLE'] = 'DEVOL - Sin Pareja en DIAN'
+
+        df_unificado = pd.concat([df_unificado, df_dc_prep], ignore_index=True)
+
+        mask_matchable_final = df_unificado['DETALLE'] == ''
+        counts_final = df_unificado[mask_matchable_final].groupby('Num.Ext_Clean')['Num.Ext_Clean'].transform('count')
+        df_unificado.loc[mask_matchable_final, 'Conteo_Pareja'] = counts_final
+
+        return df_unificado
+    @staticmethod
+    def _unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores,
+                                df_aud_dc=None, seriales_iva_dc=None, seriales_base_dc=None, seriales_base2_dc=None):
         df_dian_prep = df_auditoria.copy()
         df_dian_prep['Fecha'] = ''
         df_dian_prep['BASE_2'] = ''
         df_dian_prep['Prioridad_Fila'] = 1
         
-        # --- PRESERVAR Num.Ext ORIGINAL ---
-        # Guardamos el Num.Ext original antes de cualquier modificación
         if 'Num.Ext' in df_dian_prep.columns:
             df_dian_prep['Num.Ext_Original'] = df_dian_prep['Num.Ext']
         else:
@@ -308,7 +442,6 @@ class ConciliadorAuditoria:
             numero_limpio = (
                 df_aud_comp['Número'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             )
-            
             df_cont_prep['CUFE/CUDE'] = numero_limpio
         else:
             df_cont_prep['CUFE/CUDE'] = ''
@@ -316,21 +449,11 @@ class ConciliadorAuditoria:
         # --- LIMPIEZA DE CARACTERES ESPECIALES EN Num.Ext ---
         patron_regex = f"[{re.escape(''.join(CARACTERES_ESPECIALES))}]"
 
-        # PRESERVAR Num.Ext original de auditoría
         df_cont_prep['Num.Ext'] = df_aud_comp['Num.Ext'] if 'Num.Ext' in df_aud_comp.columns else ''
-        df_cont_prep['Num.Ext_Original'] = df_cont_prep['Num.Ext']  # Guardar original
+        df_cont_prep['Num.Ext_Original'] = df_cont_prep['Num.Ext']
         
-# Crear versión limpia para emparejamiento (CONT)
-        df_cont_prep['Num.Ext_Clean'] = (
-            df_cont_prep['Num.Ext']
-            .fillna('')
-            .astype(str)
-            .str.replace(patron_regex, '', regex=True)
-            .str.strip()
-            .str.replace(r'^0+(?=.)', '', regex=True) # <-- NUEVO: Ignora ceros a la izquierda
-        )
-        # --- DETECTAR SI EL Num.Ext ORIGINAL TIENE CARACTERES ESPECIALES ---
-        # Para marcarlos en rojo después
+        df_cont_prep['Num.Ext_Clean'] = ConciliadorAuditoria._normalizar_num_ext(df_cont_prep['Num.Ext'], patron_regex)
+        
         df_cont_prep['Tiene_Caracter_Especial'] = (
             df_cont_prep['Num.Ext_Original']
             .fillna('')
@@ -338,21 +461,13 @@ class ConciliadorAuditoria:
             .str.contains(patron_regex, regex=True, na=False)
         )
         
-# --- DETECCIÓN DE DUPLICADOS EN AUDITORÍA ---
+        # --- DETECCIÓN DE DUPLICADOS EN AUDITORÍA ---
         mask_duplicados_aud = False
         if 'Num.Ext' in df_aud_comp.columns:
-            num_ext_clean_aud = (
-                df_aud_comp['Num.Ext']
-                .fillna('')
-                .astype(str)
-                .str.replace(patron_regex, '', regex=True)
-                .str.strip()
-                .str.replace(r'^0+(?=.)', '', regex=True) # <-- NUEVO: Ignora ceros a la izquierda
-            )
+            num_ext_clean_aud = ConciliadorAuditoria._normalizar_num_ext(df_aud_comp['Num.Ext'], patron_regex)
             mask_no_vacio_aud = num_ext_clean_aud != ''
             mask_duplicados_aud = num_ext_clean_aud.duplicated(keep=False) & mask_no_vacio_aud
         
-        # Asignar DETALLE para duplicados en auditoría
         df_cont_prep['DETALLE'] = np.where(
             mask_duplicados_aud, 
             'CONT - DUPLICADO', 
@@ -371,17 +486,8 @@ class ConciliadorAuditoria:
             if col not in df_cont_prep.columns:
                 df_cont_prep[col] = ''
 
-# CREAR Num.Ext_Clean para DIAN también
-        df_dian_prep['Num.Ext_Clean'] = (
-            df_dian_prep['Num.Ext']
-            .fillna('')
-            .astype(str)
-            .str.replace(patron_regex, '', regex=True)
-            .str.strip()
-            .str.replace(r'^0+(?=.)', '', regex=True) # <-- NUEVO: Ignora ceros a la izquierda
-        )
+        df_dian_prep['Num.Ext_Clean'] = ConciliadorAuditoria._normalizar_num_ext(df_dian_prep['Num.Ext'], patron_regex)
         
-        # DETECTAR caracteres especiales en DIAN
         df_dian_prep['Tiene_Caracter_Especial'] = (
             df_dian_prep['Num.Ext_Original']
             .fillna('')
@@ -389,13 +495,11 @@ class ConciliadorAuditoria:
             .str.contains(patron_regex, regex=True, na=False)
         )
 
-        # Usar Num.Ext_Original como Num.Ext para mostrar en el Excel
         df_dian_prep['Num.Ext'] = df_dian_prep['Num.Ext_Original']
         df_cont_prep['Num.Ext'] = df_cont_prep['Num.Ext_Original']
 
         df_unificado = pd.concat([df_dian_prep, df_cont_prep], ignore_index=True)
 
-        # --- FILTROS ADICIONALES: IGNORAR "TOTALES" Y "0000000000" ---
         col_nombre_emisor = 'Nombre Emisor' if 'Nombre Emisor' in df_unificado.columns else 'TERCERO'
         mask_totales = df_unificado[col_nombre_emisor].fillna('').astype(str).str.upper().str.contains('TOTALES')
         mask_ceros = df_unificado['Num.Ext_Clean'].fillna('').astype(str).str.contains('0000000000')
@@ -409,12 +513,93 @@ class ConciliadorAuditoria:
         counts = df_unificado[mask_matchable].groupby('Num.Ext_Clean')['Num.Ext_Clean'].transform('count')
         df_unificado.loc[mask_matchable, 'Conteo_Pareja'] = counts
 
+ # --- NUEVO: EMPAREJAMIENTO FLEXIBLE (FUZZY MATCHING) ---
+        # Identificamos los que quedaron sin pareja en el primer intento
+        mask_huerfano = mask_matchable & (df_unificado['Conteo_Pareja'] == 1)
+        
+        # CORRECCIÓN: Agrupamos los huérfanos SOLO por NIT. 
+        # (Comparar valores exactos como texto causaba que fallara si había decimales de diferencia)
+        nit_clean_fuzzy = df_unificado['NIT Emisor'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+        df_unificado['Fuzzy_Key'] = nit_clean_fuzzy
+        
+        # Pre-calculamos las bases para compararlas matemáticamente
+        df_unificado['Base_Num_Fuzzy'] = pd.to_numeric(df_unificado['BASE'], errors='coerce').fillna(0)
+        df_unificado['Fue_Fuzzy_Match'] = False
+        
+        huerfanos_idx = df_unificado[mask_huerfano].index
+        
+        if len(huerfanos_idx) > 0:
+            for _, group in df_unificado.loc[huerfanos_idx].groupby('Fuzzy_Key'):
+                dian_idxs = group[group['Prioridad_Fila'] == 1].index.tolist()
+                cont_idxs = group[group['Prioridad_Fila'] == 2].index.tolist()
+                
+                # Si hay al menos un huérfano de DIAN y uno de CONT en este mismo proveedor
+                if dian_idxs and cont_idxs:
+                    matches = []
+                    for d_idx in dian_idxs:
+                        for c_idx in cont_idxs:
+                            str_d = df_unificado.at[d_idx, 'Num.Ext_Clean']
+                            str_c = df_unificado.at[c_idx, 'Num.Ext_Clean']
+                            
+                            base_d = df_unificado.at[d_idx, 'Base_Num_Fuzzy']
+                            base_c = df_unificado.at[c_idx, 'Base_Num_Fuzzy']
+                            
+                            # 1. Tolerancia matemática en la BASE (Diferencia máxima de 50 pesos)
+                            if abs(base_d - base_c) > 50.0:
+                                continue # Si el valor no cuadra, ignoramos y seguimos
+                                
+                            # 2. Porcentaje de similitud básica de los folios
+                            sim = difflib.SequenceMatcher(None, str_d, str_c).ratio()
+                            
+                            # 3. Bonificación si al quitar TODOS los ceros internos quedan idénticos
+                            if str_d.replace('0', '') == str_c.replace('0', '') and str_d.replace('0', '') != '':
+                                sim = max(sim, 0.95)
+                                
+                            # 4. Bonificación si un folio contiene al otro por completo
+                            if (str_d in str_c or str_c in str_d) and len(str_d) > 2 and len(str_c) > 2:
+                                sim = max(sim, 0.90)
+                                
+                            # Consideramos que son pareja si tienen al menos 40% de similitud
+                            if sim > 0.40:
+                                matches.append((sim, d_idx, c_idx))
+                    
+                    # Emparejamos los más similares primero
+                    matches.sort(key=lambda x: x[0], reverse=True)
+                    emparejados_d = set()
+                    emparejados_c = set()
+                    
+                    for sim, d_idx, c_idx in matches:
+                        if d_idx not in emparejados_d and c_idx not in emparejados_c:
+                            # Asignamos una clave nueva idéntica para que el sistema los una
+                            base_str = df_unificado.at[d_idx, 'Num.Ext_Clean']
+                            nueva_clave = f"{base_str}_FUZZY_{d_idx}"
+                            
+                            df_unificado.at[d_idx, 'Num.Ext_Clean'] = nueva_clave
+                            df_unificado.at[c_idx, 'Num.Ext_Clean'] = nueva_clave
+                            df_unificado.at[d_idx, 'Fue_Fuzzy_Match'] = True
+                            df_unificado.at[c_idx, 'Fue_Fuzzy_Match'] = True
+                            
+                            emparejados_d.add(d_idx)
+                            emparejados_c.add(c_idx)
+                            
+        # Limpiamos las columnas auxiliares
+        df_unificado = df_unificado.drop(columns=['Base_Num_Fuzzy', 'Fuzzy_Key'])
+        
+        # Recalcular el conteo final con las nuevas parejas formadas a la fuerza
+        counts_re = df_unificado[mask_matchable].groupby('Num.Ext_Clean')['Num.Ext_Clean'].transform('count')
+        df_unificado.loc[mask_matchable, 'Conteo_Pareja'] = counts_re
+        # --- FIN EMPAREJAMIENTO FLEXIBLE ---
+
         mask_single = mask_matchable & (df_unificado['Conteo_Pareja'] == 1)
         is_dian = df_unificado['Prioridad_Fila'] == 1
         is_cont = df_unificado['Prioridad_Fila'] == 2
         
         df_unificado.loc[mask_single & is_dian, 'DETALLE'] = 'DIAN - Sin Pareja en Contabilidad'
         df_unificado.loc[mask_single & is_cont, 'DETALLE'] = 'CONT - Sin Pareja en DIAN'
+        if df_aud_dc is not None and not df_aud_dc.empty:
+            df_unificado = ConciliadorAuditoria._conciliar_con_devoluciones(
+                df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex
+            )
 
         df_unificado['NIT_Emisor_Clean'] = (
             df_unificado['NIT Emisor'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
@@ -448,15 +633,23 @@ class ConciliadorAuditoria:
         df_unificado['Tipo_Doc_Clean'] = df_unificado['Tipo de documento'].fillna('').astype(str).str.strip().str.upper()
         df_unificado['Tipo_Doc_Group'] = np.where(df_unificado['Tipo_Doc_Clean'] == 'FC1', 1, 2)
         df_unificado['Tipo_Doc_Group'] = df_unificado.groupby('Num.Ext_Clean')['Tipo_Doc_Group'].transform('min')
-
         df_unificado['Es_Incompleta'] = df_unificado['DETALLE'] != ''
 
-        df_unificado['Sort_Incompleta_Tipo'] = np.where(df_unificado['Es_Incompleta'], df_unificado['Tipo_Doc_Clean'], '')
-        df_unificado['Sort_Incompleta_Motivo'] = np.where(df_unificado['Es_Incompleta'], df_unificado['DETALLE'], '')
+        # Homologar Nombre Emisor
+        df_unificado['Nombre_Emisor_Clean'] = df_unificado['Nombre Emisor'].fillna('').astype(str).str.strip().str.upper()
+        df_unificado['Nombre_Emisor_Group'] = df_unificado.groupby('Num.Ext_Clean')['Nombre_Emisor_Clean'].transform('max')
+
+        mask_cont = df_unificado['Prioridad_Fila'].isin([2, 3])
+        df_unificado['Temp_Prefix'] = np.where(mask_cont, df_unificado['Tipo de documento'].astype(str).str.strip().str.upper().str[:2], '')
+        df_unificado['Prefix_Doc_Group'] = df_unificado.groupby('Num.Ext_Clean')['Temp_Prefix'].transform('max')
+
+        df_unificado['Sort_Matched_Tipo'] = np.where(~df_unificado['Es_Incompleta'], df_unificado['Prefix_Doc_Group'], '')
+        df_unificado['Sort_Matched_Emisor'] = np.where(~df_unificado['Es_Incompleta'], df_unificado['Nombre_Emisor_Group'], '')
+        df_unificado['Sort_Unmatched_Detalle'] = np.where(df_unificado['Es_Incompleta'], df_unificado['DETALLE'], '')
 
         df_unificado = df_unificado.sort_values(
-            by=['Es_Incompleta', 'Sort_Incompleta_Tipo', 'Sort_Incompleta_Motivo', 'Tipo_Doc_Group', 'NIT_Emisor_Group', 'Num.Ext_Clean', 'Prioridad_Fila'],
-            ascending=[True, True, True, True, False, True, True]
+            by=['Es_Incompleta', 'Sort_Matched_Tipo', 'Sort_Matched_Emisor', 'Sort_Unmatched_Detalle', 'Nombre_Emisor_Group', 'Num.Ext_Clean', 'Prioridad_Fila'],
+            ascending=[True, True, True, True, True, True, True]
         )
 
         # --- REVISIÓN ROBUSTA DE DIFERENCIAS EN PAREJAS ---
@@ -468,7 +661,6 @@ class ConciliadorAuditoria:
         
         mask_pairs = df_unificado['Conteo_Pareja'] >= 2
         
-        # Agrupamos por pareja y sumamos para evaluar la diferencia total de la pareja
         group_base_sum = df_unificado[mask_pairs].groupby('Num.Ext_Clean')['Temp_Base_Num'].transform('sum')
         group_iva_sum = df_unificado[mask_pairs].groupby('Num.Ext_Clean')['Temp_IVA_Num'].transform('sum')
 
@@ -481,36 +673,62 @@ class ConciliadorAuditoria:
 
         df_unificado = df_unificado.drop(columns=['Temp_Base_Num', 'Temp_IVA_Num'])
 
+        # --- REVISIÓN DE TERCERO (NIT) EN PAREJAS ---
+        df_unificado['Diff_NIT'] = False
+        nit_nunique = df_unificado[mask_pairs].groupby('Num.Ext_Clean')['NIT_Emisor_Clean'].transform('nunique')
+        mask_diff_nit = mask_pairs & (nit_nunique > 1)
+        
+        df_unificado.loc[mask_diff_nit, 'DETALLE'] = np.where(
+            df_unificado.loc[mask_diff_nit, 'DETALLE'] == '',
+            'No coincide tercero',
+            df_unificado.loc[mask_diff_nit, 'DETALLE'] + ' / No coincide tercero'
+        )
+        df_unificado['Diff_NIT'] = mask_diff_nit
+
+        # --- NUEVO: REVISIÓN DE EMPAREJAMIENTO FLEXIBLE (DIF. FORMATO) ---
+        mask_fue_fuzzy = df_unificado['Fue_Fuzzy_Match'] == True
+        
+        df_unificado.loc[mask_fue_fuzzy, 'DETALLE'] = np.where(
+            df_unificado.loc[mask_fue_fuzzy, 'DETALLE'] == '',
+            'Dif. formato de factura',
+            df_unificado.loc[mask_fue_fuzzy, 'DETALLE'] + ' / Dif. formato de factura'
+        )
+        
+        # Pinta la celda de rojo al compartir la variable de caracteres especiales
+        df_unificado['Tiene_Caracter_Especial'] = df_unificado['Tiene_Caracter_Especial'] | mask_fue_fuzzy
+
+        # Extraer listas finales para el excel
         parejas_incompletas = df_unificado['Es_Incompleta'].tolist()
         dif_base_list = df_unificado['Diff_BASE'].tolist()
         dif_iva_list = df_unificado['Diff_IVA'].tolist()
-
         tiene_caracter_especial_list = df_unificado['Tiene_Caracter_Especial'].tolist()
+        dif_nit_list = df_unificado['Diff_NIT'].tolist()
+        nombre_emisor_group_list = df_unificado['Nombre_Emisor_Group'].tolist()
+        prefix_doc_group_list = df_unificado['Prefix_Doc_Group'].tolist()
 
         columnas_finales = list(COLUMNAS_DIAN_VS_CONT)
         if 'DETALLE' not in columnas_finales:
             columnas_finales.append('DETALLE')
 
         df_dian_vs_cont = df_unificado[columnas_finales]
-        return df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list
+        
+        return df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list, dif_nit_list, nombre_emisor_group_list, prefix_doc_group_list
+
 
     def _escribir_excel(
             self, df_resultado, df_auditoria, df_res_auditoria, df_dian_vs_cont,
             parejas_incompletas, df_autoretenedores=None, dif_base=None, dif_iva=None,
-            tiene_caracter_especial=None  # Nuevo parámetro
+            tiene_caracter_especial=None, dif_nit=None, nombre_emisor_group=None,
+            prefix_doc_group=None
         ):
+        if prefix_doc_group is None: prefix_doc_group = []
         if df_autoretenedores is None:
             df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
         if dif_base is None: dif_base = []
         if dif_iva is None: dif_iva = []
-        if df_autoretenedores is None:
-            df_autoretenedores = pd.DataFrame(columns=['NIT', 'COMENTARIO'])
-        if dif_base is None: 
-            dif_base = []
-        if dif_iva is None: 
-            dif_iva = []
-        if tiene_caracter_especial is None:  # Nuevo
-            tiene_caracter_especial = []
+        if tiene_caracter_especial is None: tiene_caracter_especial = []
+        if dif_nit is None: dif_nit = []
+        if nombre_emisor_group is None: nombre_emisor_group = []
 
         try:
             engine_kwargs = {'keep_vba': True} if self.file_path.suffix.lower() == '.xlsm' else {}
@@ -608,11 +826,10 @@ class ConciliadorAuditoria:
                         tipo_str = str(row.get('tipo', '')).upper().strip()
                         tercero_str = str(row.get('tercero', '')).strip().upper()
                         
-                        # --- NUEVO MANEJO DE PRIORIDADES SEGÚN REQUERIMIENTO ---
                         if 'AUTORRETENEDOR' in auto_str:
                             prioridad = 1
                         elif auto_str != '' or 'REGIMEN SIMPLE' in tipo_str:
-                            prioridad = 2 # Si tiene algún dato en auto_str que no sea autorretenedor
+                            prioridad = 2
                         else:
                             prioridad = 3
                             
@@ -682,7 +899,7 @@ class ConciliadorAuditoria:
                             for row in range(2, len(df_target) + 2):
                                 sheet_target.cell(row=row, column=col_idx).number_format = '#,##0.00'
 
-                # --- 3. ESTILOS VISUALES Y CORRECCIÓN DE COLORES EN DIAN VS CONT ---
+# --- 3. ESTILOS VISUALES Y CORRECCIÓN DE COLORES EN DIAN VS CONT ---
                 max_row = len(df_dian_vs_cont) + 1
                 max_col = len(df_dian_vs_cont.columns)
 
@@ -690,7 +907,7 @@ class ConciliadorAuditoria:
 
                 header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
                 header_font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-                
+
                 thin_border = Border(
                     left=Side(style='thin', color='D9D9D9'),
                     right=Side(style='thin', color='D9D9D9'),
@@ -705,10 +922,7 @@ class ConciliadorAuditoria:
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                     cell.border = thin_border
 
-                fill_vacio = PatternFill(start_color="A6B7F5", end_color="A6B7F5", fill_type="solid")
-                fill_llenado = PatternFill(start_color="627FF0", end_color="627FF0", fill_type="solid")
                 fill_red_alert = PatternFill(start_color=RED_FILL_COLOR, end_color=RED_FILL_COLOR, fill_type="solid")
-                fill_duplicado = PatternFill(start_color=DUPLICADO_FILL_COLOR, end_color=DUPLICADO_FILL_COLOR, fill_type="solid")
 
                 COLOR_MOTIVOS = {
                     'DIAN - Gasto Personal': 'FFCCFF',                
@@ -718,7 +932,10 @@ class ConciliadorAuditoria:
                     'DIAN - Sin Pareja en Contabilidad': 'FFF2CC',    
                     'CONT - Sin Pareja en DIAN': 'E2EFDA',            
                     'DIAN - DUPLICADO': 'FF6B6B',                     
-                    'CONT - DUPLICADO': 'FF6B6B',                    
+                    'CONT - DUPLICADO': 'FF6B6B',
+                    'DIAN - Sin Pareja en Contabilidad ni Devoluciones': 'FFF2CC',
+                    'DEVOL - Sin Pareja en DIAN': 'E2EFDA',
+                    'DEVOL - Sin Num.Ext': 'F2DCDB',
                 }
 
                 col_grupo_idx = df_dian_vs_cont.columns.get_loc('Grupo') + 1 if 'Grupo' in df_dian_vs_cont.columns else None
@@ -727,72 +944,148 @@ class ConciliadorAuditoria:
                 
                 col_base_idx_dian = df_dian_vs_cont.columns.get_loc('BASE') + 1 if 'BASE' in df_dian_vs_cont.columns else None
                 col_iva_idx_dian = df_dian_vs_cont.columns.get_loc('IVA') + 1 if 'IVA' in df_dian_vs_cont.columns else None
+                col_num_ext_idx = df_dian_vs_cont.columns.get_loc('Num.Ext') + 1 if 'Num.Ext' in df_dian_vs_cont.columns else None
 
                 for row_idx in range(2, max_row + 1):
                     es_vacio = True
-
-                    col_num_ext_idx = df_dian_vs_cont.columns.get_loc('Num.Ext') + 1 if 'Num.Ext' in df_dian_vs_cont.columns else None
 
                     if col_grupo_idx:
                         val_grupo = sheet_dian_vs_cont.cell(row=row_idx, column=col_grupo_idx).value
                         if val_grupo is not None and str(val_grupo).strip() != '':
                             es_vacio = False
-                        
 
                     motivo = sheet_dian_vs_cont.cell(row=row_idx, column=col_motivo_idx).value if col_motivo_idx else ''
-                    doc = sheet_dian_vs_cont.cell(row=row_idx, column=col_doc).value if col_doc else ''
                     
-                    # Determinamos el color BASE de la fila
+                    color_llenado_hex = "627FF0" # Azul default
+                    color_vacio_hex = "A6B7F5"   # Azul claro default
+                    
+                    es_incompleta = parejas_incompletas[row_idx - 2] if (row_idx - 2) < len(parejas_incompletas) else True
+                    
+                    if not es_incompleta and (row_idx - 2) < len(prefix_doc_group):
+                        prefix = prefix_doc_group[row_idx - 2]
+                        if prefix == 'FC':
+                            color_llenado_hex, color_vacio_hex = 'B8E3BD', 'DAEDDC'
+                        elif prefix == 'GC':
+                            color_llenado_hex, color_vacio_hex = 'ADB3DB', 'D5D8F0'
+                        elif prefix == 'DS':
+                            color_llenado_hex, color_vacio_hex = 'E6BE9A', 'F2D7BF'
+                        elif prefix == 'DC':
+                            color_llenado_hex, color_vacio_hex = 'cddbb4', 'e7f5ce'
+                        elif prefix == 'GC':
+                            color_llenado_hex, color_vacio_hex= 'a0d9d6', 'bae8e6'
+                        elif prefix == 'CG':
+                            color_llenado_hex, color_vacio_hex = 'f5d6e7', 'f9e6f2'
+                            
+                    current_fill_llenado = PatternFill(start_color=color_llenado_hex, end_color=color_llenado_hex, fill_type="solid")
+                    current_fill_vacio = PatternFill(start_color=color_vacio_hex, end_color=color_vacio_hex, fill_type="solid")
+
                     if motivo and str(motivo).strip() != '':
                         motivo_str = str(motivo).strip()
-                        # Verificar si es duplicado para usar color especial
                         if 'DUPLICADO' in motivo_str:
                             color_hex = DUPLICADO_FILL_COLOR
                         elif 'Gasto Personal' in motivo_str:
-                            color_hex = 'FFCCFF'  # Color para personales
+                            color_hex = 'FFCCFF'
+                        elif 'No coincide tercero' in motivo_str:
+                            color_hex = color_llenado_hex
                         else:
                             color_hex = COLOR_MOTIVOS.get(motivo_str, 'FFC7CE') 
                         fill_base = PatternFill(start_color=color_hex, end_color=color_hex, fill_type="solid")
                     else:
-                        fill_base = fill_vacio if es_vacio else fill_llenado
+                        fill_base = current_fill_vacio if es_vacio else current_fill_llenado
 
-# Paso A: Aplicamos el color base a toda la fila
                     for col_idx in range(1, max_col + 1):
                         cell = sheet_dian_vs_cont.cell(row=row_idx, column=col_idx)
                         cell.fill = fill_base
                         cell.font = Font(name="Arial", size=10)
                         cell.border = thin_border
-                        
-                    # Paso B: Sobreescribimos de rojo SÓLO si hay diferencias o caracteres especiales
-                    es_dif_base = dif_base[row_idx - 2]
-                    es_dif_iva = dif_iva[row_idx - 2]
-                    
+
+                    es_dif_base = dif_base[row_idx - 2] if (row_idx - 2) < len(dif_base) else False
+                    es_dif_iva = dif_iva[row_idx - 2] if (row_idx - 2) < len(dif_iva) else False
+
                     if es_dif_base and col_base_idx_dian:
                         sheet_dian_vs_cont.cell(row=row_idx, column=col_base_idx_dian).fill = fill_red_alert
-                        
+
                     if es_dif_iva and col_iva_idx_dian:
                         sheet_dian_vs_cont.cell(row=row_idx, column=col_iva_idx_dian).fill = fill_red_alert
-                        
-                    # NUEVO: Aplicamos el rojo al Num.Ext si tiene caracteres especiales después de pintar el fondo
+
                     if col_num_ext_idx and row_idx - 2 < len(tiene_caracter_especial):
                         if tiene_caracter_especial[row_idx - 2]:
                             sheet_dian_vs_cont.cell(row=row_idx, column=col_num_ext_idx).fill = fill_red_alert
+                            
+                    col_nit_idx_dian = df_dian_vs_cont.columns.get_loc('NIT Emisor') + 1 if 'NIT Emisor' in df_dian_vs_cont.columns else None
 
-# --- AUTOAJUSTE DE COLUMNAS (VERSIÓN SEGURA) ---
+                    if col_nit_idx_dian and row_idx - 2 < len(dif_nit):
+                        if dif_nit[row_idx - 2]:
+                            sheet_dian_vs_cont.cell(row=row_idx, column=col_nit_idx_dian).fill = fill_red_alert                    
+
+                col_base2_idx_dian = df_dian_vs_cont.columns.get_loc('BASE_2') + 1 if 'BASE_2' in df_dian_vs_cont.columns else None
+
+                mask_conciliados = ~np.array(parejas_incompletas)
+                sum_base = pd.to_numeric(df_dian_vs_cont.loc[mask_conciliados, 'BASE'], errors='coerce').fillna(0).sum() if 'BASE' in df_dian_vs_cont.columns else 0
+                sum_iva = pd.to_numeric(df_dian_vs_cont.loc[mask_conciliados, 'IVA'], errors='coerce').fillna(0).sum() if 'IVA' in df_dian_vs_cont.columns else 0
+                sum_base2 = pd.to_numeric(df_dian_vs_cont.loc[mask_conciliados, 'BASE_2'], errors='coerce').fillna(0).sum() if 'BASE_2' in df_dian_vs_cont.columns else 0
+
+                boundary_added = False
+
+                for row_idx in range(max_row, 2, -1):
+                    idx_curr = row_idx - 2
+                    idx_prev = row_idx - 3
+
+                    curr_incompleta = parejas_incompletas[idx_curr]
+                    prev_incompleta = parejas_incompletas[idx_prev]
+
+                    if curr_incompleta == True and prev_incompleta == False:
+                        sheet_dian_vs_cont.insert_rows(row_idx, amount=5)
+                        boundary_added = True
+
+                        row_sum = row_idx + 2 
+
+                        if col_base_idx_dian and col_base_idx_dian > 1:
+                            lbl = sheet_dian_vs_cont.cell(row=row_sum, column=col_base_idx_dian - 1)
+                            lbl.value = "TOTAL CONCILIADOS:"
+                            lbl.font = Font(bold=True)
+                            lbl.alignment = Alignment(horizontal='right')
+
+                        for val, col_idx in [(sum_base, col_base_idx_dian), (sum_iva, col_iva_idx_dian), (sum_base2, col_base2_idx_dian)]:
+                            if col_idx:
+                                c = sheet_dian_vs_cont.cell(row=row_sum, column=col_idx)
+                                c.value = val
+                                c.number_format = '#,##0.00'
+                                c.font = Font(bold=True)
+
+                    elif curr_incompleta == False and prev_incompleta == False:
+                        curr_emisor = nombre_emisor_group[idx_curr]
+                        prev_emisor = nombre_emisor_group[idx_prev]
+                        
+                        curr_prefix = prefix_doc_group[idx_curr]
+                        prev_prefix = prefix_doc_group[idx_prev]
+
+                        if curr_emisor != prev_emisor or curr_prefix != prev_prefix:
+                            sheet_dian_vs_cont.insert_rows(row_idx, amount=1)
+
+                if not boundary_added and len(parejas_incompletas) > 0 and not all(parejas_incompletas):
+                    end_row = sheet_dian_vs_cont.max_row + 1
+                    sheet_dian_vs_cont.insert_rows(end_row, amount=5)
+                    row_sum = end_row + 2
+
+                    if col_base_idx_dian and col_base_idx_dian > 1:
+                        lbl = sheet_dian_vs_cont.cell(row=row_sum, column=col_base_idx_dian - 1)
+                        lbl.value = "TOTAL CONCILIADOS:"
+                        lbl.font = Font(bold=True)
+                        lbl.alignment = Alignment(horizontal='right')
+
+                    for val, col_idx in [(sum_base, col_base_idx_dian), (sum_iva, col_iva_idx_dian), (sum_base2, col_base2_idx_dian)]:
+                        if col_idx:
+                            c = sheet_dian_vs_cont.cell(row=row_sum, column=col_idx)
+                            c.value = val
+                            c.number_format = '#,##0.00'
+                            c.font = Font(bold=True)
+
                 for idx, col_name in enumerate(df_dian_vs_cont.columns):
                     col_letter = get_column_letter(idx + 1)
-                    
-                    # 1. Longitud del encabezado (seguro con str)
                     max_len_header = len(str(col_name))
-                    
-                    # 2. Longitud máxima de los datos usando .str.len() vectorizado
-                    # astype(str) convierte todo a texto, incluyendo nulos y números
                     max_len_data = df_dian_vs_cont[col_name].astype(str).str.len().max()
-                    
-                    # 3. Prevenir que max_len_data sea NaN (float) si la columna está vacía
                     max_len_data = 0 if pd.isna(max_len_data) else int(max_len_data)
-                    
-                    # 4. Asignamos el ancho (mínimo 12 para que no quede aplastado, +3 de margen)
                     ancho_final = max(max_len_data, max_len_header, 12) + 3
                     sheet_dian_vs_cont.column_dimensions[col_letter].width = ancho_final
 
