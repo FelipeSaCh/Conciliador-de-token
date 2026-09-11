@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter, range_boundaries
-from openpyxl.worksheet.table import Table, TableStyleInfo
+
 
 from config import COLUMNAS_DIAN_VS_CONT, OUTPUT_SHEETS_TO_HIDE, ORDEN, RED_FILL_COLOR, CARACTERES_ESPECIALES, DUPLICADO_FILL_COLOR
 from errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
@@ -147,9 +147,36 @@ class ConciliadorAuditoria:
         self._reportar("Cargando hoja de Token procesado...")
         try:
             df_full = pd.read_excel(self.file_path, sheet_name=self.sheet_names['principal'])
+            
+            # --- NUEVO: MÉTODO DE CONFIRMACIÓN DE LÍMITE DE FILAS ---
+            # Encuentra el índice de la última fila que contiene algún dato real.
+            # Corta el DataFrame hasta ese punto. Ignora el vacío infinito hacia abajo 
+            # pero mantiene intacta cualquier fila en blanco que exista en el medio.
+            ultimo_indice_valido = df_full.dropna(how='all').index.max()
+            if pd.notna(ultimo_indice_valido):
+                df_full = df_full.loc[:ultimo_indice_valido].copy()
+                
             df_full = self._limpiar_encabezados(df_full)
         except Exception as e:
             raise ErrorSistema(f"Error leyendo la hoja principal: {e}") from e
+
+        cols_impuestos = [
+            "ICA", "IC", "INC", "Timbre", "INC Timbre", "INC Bolsas", "IN Carbono", 
+            "IN Combustibles", "IC Datos", "ICL", "INPP", "IBUA", "ICUI", 
+            "Rete IVA", "Rete Renta", "Rete ICA"
+        ]
+        # Buscar cuáles de estas columnas existen realmente en el df_full
+        cols_existentes = [c for c in df_full.columns if str(c).strip().upper() in [x.upper() for x in cols_impuestos]]
+        
+        # Crear la columna 'OTROS IMPUESTOS' con la suma
+        df_full['OTROS IMPUESTOS'] = df_full[cols_existentes].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1)
+
+        # Crear mapa diccionario para cruzar a aud_comp y Aud_dc mediante Num.Ext_Clean
+        patron_regex = f"[{re.escape(''.join(CARACTERES_ESPECIALES))}]"
+        df_full['Num.Ext_Clean_Temp'] = self._normalizar_num_ext(df_full['Num.Ext'], patron_regex)
+        mapa_otros_imp = df_full.groupby('Num.Ext_Clean_Temp')['OTROS IMPUESTOS'].sum().to_dict()
+        if '' in mapa_otros_imp:
+            del mapa_otros_imp[''] # Limpiar vacíos
 
         for col in ('CONCEPTO', 'TERCERO', 'TIPO', 'BASE', 'Num.Ext'):
             if col not in df_full.columns:
@@ -157,10 +184,26 @@ class ConciliadorAuditoria:
                     "La hoja de Token no está formateada. Ejecuta primero 'Formatear Token' antes de la auditoría."
                 )
 
+# --- NUEVO: FILTRO ROBUSTO PARA ELIMINAR FILAS FANTASMAS EN EL TOKEN ---
+        # Si la fila no tiene datos en ninguna de las 5 columnas vitales, se ignora completamente
+        cols_token = ['CONCEPTO', 'TERCERO', 'TIPO', 'BASE', 'Num.Ext']
+        mask_token_vacias = df_full[cols_token].apply(
+            lambda c: c.fillna('').astype(str).str.strip().str.lower().replace(['nan', 'none', 'nat', 'null'], '') == ''
+        ).all(axis=1)
+        df_full = df_full[~mask_token_vacias].reset_index(drop=True)
+        # ------------------------------------------------------------------------
+
         self._reportar("Cargando hoja de auditoría de comprobantes...")
         df_aud_comp = self._cargar_hoja_con_encabezado_variable(self.file_path, self.sheet_names['aud_comp'])
         df_aud_comp = self._limpiar_encabezados(df_aud_comp)
-        df_aud_comp = df_aud_comp.dropna(subset=df_aud_comp.columns[:6], how='all').copy()
+        
+        # --- NUEVO: FILTRO ROBUSTO PARA COMPROBANTES ---
+        if len(df_aud_comp.columns) >= 6:
+            cols_comp = df_aud_comp.columns[:6]
+            mask_comp_vacias = df_aud_comp[cols_comp].apply(
+                lambda c: c.fillna('').astype(str).str.strip().str.lower().replace(['nan', 'none', 'nat', 'null'], '') == ''
+            ).all(axis=1)
+            df_aud_comp = df_aud_comp[~mask_comp_vacias].reset_index(drop=True).copy()
 
         nombre_auto = self.sheet_names.get('autorretenedores')
         if nombre_auto and nombre_auto in hojas_excel:
@@ -180,34 +223,54 @@ class ConciliadorAuditoria:
             try:
                 df_aud_dc = self._cargar_hoja_con_encabezado_variable(self.file_path, nombre_dc)
                 df_aud_dc = self._limpiar_encabezados(df_aud_dc)
-                df_aud_dc = df_aud_dc.dropna(subset=df_aud_dc.columns[:6], how='all').copy()
+                
+                # --- NUEVO: FILTRO ROBUSTO PARA DEVOLUCIONES ---
+                if len(df_aud_dc.columns) >= 6:
+                    cols_dc = df_aud_dc.columns[:6]
+                    mask_dc_vacias = df_aud_dc[cols_dc].apply(
+                        lambda c: c.fillna('').astype(str).str.strip().str.lower().replace(['nan', 'none', 'nat', 'null'], '') == ''
+                    ).all(axis=1)
+                    df_aud_dc = df_aud_dc[~mask_dc_vacias].reset_index(drop=True).copy()
             except Exception as e:
                 logger.warning(f"No se pudo leer la hoja de auditoría de devoluciones '{nombre_dc}': {e}")
                 df_aud_dc = None
         
-        # --- EXCLUSIÓN DEFINITIVA DE EMITIDOS Y APPLICATION RESPONSE ---
+# --- 1. IDENTIFICACIÓN PRIORITARIA DE PERSONALES ---
+        # Primero que todo, preparamos la columna DETALLE
+        df_full['DETALLE'] = ''
+
+        # Marcamos los personales INMEDIATAMENTE para blindarlos
+        es_personales_full = df_full['CONCEPTO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
+        df_full.loc[es_personales_full, 'DETALLE'] = 'DIAN: ' + df_full.loc[es_personales_full, 'CONCEPTO'].astype(str)
+        self._reportar(f"Se identificaron y protegieron {es_personales_full.sum()} registros Personales primero.")
+
+        # --- 2. EXCLUSIÓN DE EMITIDOS Y APPLICATION RESPONSE ---
         col_grupo = next((c for c in df_full.columns if str(c).strip().lower() == 'grupo'), None)
         if col_grupo:
             mask_emi = df_full[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
-            df_full = df_full[~mask_emi]
+            # Eliminamos emitidos SOLO si no fueron marcados previamente como personales
+            df_full = df_full[~(mask_emi & (df_full['DETALLE'] == ''))]
 
         col_doc = next((c for c in df_full.columns if str(c).strip().lower() == 'tipo de documento'), None)
         if col_doc:
             mask_app_response = df_full[col_doc].astype(str).str.contains('Application response', case=False, na=False)
-            df_full = df_full[~mask_app_response]
+            # Eliminamos application response SOLO si no fueron marcados como personales
+            df_full = df_full[~(mask_app_response & (df_full['DETALLE'] == ''))]
 
+        # Reseteamos el índice de la copia temporal tras borrar filas
         df_full = df_full.reset_index(drop=True)
 
-        # --- 1. MAPEO DE RAZONES DE EXCLUSIÓN PARA DIAN ---
-        df_full['DETALLE'] = ''
+        # RECALCULAMOS la máscara de personales (necesario tras el reset_index)
+        es_personales_full = df_full['CONCEPTO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
 
-        # --- DETECCIÓN DE DUPLICADOS EN TOKEN ---
+        # --- 3. DETECCIÓN DE DUPLICADOS EN TOKEN ---
         if 'Num.Ext' in df_full.columns:
             mask_duplicados_token = self._detectar_duplicados(df_full, 'Num.Ext')
+            # Aplicamos "DUPLICADO" solo a los que tienen DETALLE vacío (respeta a los Personales)
             df_full.loc[mask_duplicados_token & (df_full['DETALLE'] == ''), 'DETALLE'] = 'DIAN - DUPLICADO'
-            self._reportar(f"Se detectaron {mask_duplicados_token.sum()} registros duplicados en Token")
+            self._reportar(f"Se detectaron {mask_duplicados_token.sum()} registros duplicados en Token (excluyendo Personales)")
 
-        es_personales_full = df_full['TIPO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
+        es_personales_full = df_full['CONCEPTO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
         mask_personales_sin_detalle = es_personales_full & (df_full['DETALLE'] == '')
         df_full.loc[mask_personales_sin_detalle, 'DETALLE'] = 'DIAN: ' + df_full.loc[mask_personales_sin_detalle, 'CONCEPTO'].astype(str)
 
@@ -234,18 +297,23 @@ class ConciliadorAuditoria:
             if col not in df_full.columns:
                 df_full[col] = ''
         
-        df_auditoria = df_full[ORDEN + ['DETALLE']].copy()
+        columnas_base = ORDEN + ['DETALLE']
+        if 'OTROS IMPUESTOS' not in columnas_base:
+            columnas_base.append('OTROS IMPUESTOS')
+        df_auditoria = df_full[columnas_base].copy()
 
         self._reportar("Procesando hoja de auditoría de comprobantes...")
         df_res_auditoria = self._procesar_aud_comp(
-            df_aud_comp, self.seriales_iva, self.seriales_base, self.seriales_base2, self.seriales_ret
+            df_aud_comp, self.seriales_iva, self.seriales_base, self.seriales_base2, self.seriales_ret,
+            mapa_otros_imp=mapa_otros_imp  # <--- NUEVO
         )
 
         self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
-        df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial, dif_nit, nombre_emisor_group, prefix_doc_group = self._unificar_dian_vs_cont(
+        df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial, dif_nit, nombre_emisor_group, prefix_doc_group, df_res_dc = self._unificar_dian_vs_cont(
             df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores,
             df_aud_dc=df_aud_dc, seriales_iva_dc=self.seriales_iva_dc,
-            seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc
+            seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc,
+            mapa_otros_imp=mapa_otros_imp  # <--- NUEVO
         )
 
         self._reportar("Escribiendo resultados en el archivo Excel...")
@@ -261,7 +329,9 @@ class ConciliadorAuditoria:
             tiene_caracter_especial=tiene_caracter_especial,
             dif_nit=dif_nit,
             nombre_emisor_group=nombre_emisor_group,
-            prefix_doc_group=prefix_doc_group
+            prefix_doc_group=prefix_doc_group,
+            df_res_dc=df_res_dc,            
+            nombre_dc=nombre_dc            
         )
         self._reportar("Proceso completado con éxito.")
         return {
@@ -271,7 +341,7 @@ class ConciliadorAuditoria:
         }
 
     @staticmethod
-    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2, seriales_ret=None, es_devolucion=False):
+    def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2, seriales_ret=None, es_devolucion=False, mapa_otros_imp=None):
         cols_iva = [col for col in seriales_iva if col in df_aud_comp.columns]
         cols_base = [col for col in seriales_base if col in df_aud_comp.columns]
         cols_base2 = [col for col in seriales_base2 if col in df_aud_comp.columns]
@@ -282,24 +352,35 @@ class ConciliadorAuditoria:
             df_aud_comp['Num.Ext'].fillna('').astype(str) if 'Num.Ext' in df_aud_comp.columns else ''
         )
         
-        # NUEVO: Definir el multiplicador basado en el origen de la hoja
         multiplicador = 1 if es_devolucion else -1
 
+        # SE MODIFICÓ AQUÍ: Uso de .abs() antes de multiplicar
         df_res_auditoria['IVA'] = (
-            df_aud_comp[cols_iva].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_iva else 0
+            df_aud_comp[cols_iva].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1).abs() * multiplicador if cols_iva else 0
         )
         df_res_auditoria['BASE'] = (
-            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_base else 0
+            df_aud_comp[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1).abs() * multiplicador if cols_base else 0
         )
         df_res_auditoria['BASE_2'] = (
-            df_aud_comp[cols_base2].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1) * multiplicador if cols_base2 else 0
+            df_aud_comp[cols_base2].apply(pd.to_numeric, errors='coerce').fillna(0).sum(axis=1).abs() * multiplicador if cols_base2 else 0
         )
-        return df_res_auditoria[['Num.Ext', 'BASE', 'BASE_2', 'IVA']]
+
+        # NUEVO: Cruzar "OTROS IMPUESTOS" desde el Token usando Num.Ext
+        if mapa_otros_imp is not None:
+            patron_regex = f"[{re.escape(''.join(CARACTERES_ESPECIALES))}]"
+            num_ext_clean_aud = ConciliadorAuditoria._normalizar_num_ext(df_res_auditoria['Num.Ext'], patron_regex)
+            df_res_auditoria['OTROS IMPUESTOS'] = num_ext_clean_aud.map(mapa_otros_imp).fillna(0)
+        else:
+            df_res_auditoria['OTROS IMPUESTOS'] = 0
+
+        return df_res_auditoria[['Num.Ext', 'BASE', 'BASE_2', 'IVA', 'OTROS IMPUESTOS']]
     @staticmethod
-    def _conciliar_con_devoluciones(df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex):
-        # Añadimos es_devolucion=True a la llamada
+
+    def _conciliar_con_devoluciones(df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex, mapa_otros_imp=None):
+        
+        # En la primera línea, donde se llama a _procesar_aud_comp:
         df_res_dc = ConciliadorAuditoria._procesar_aud_comp(
-            df_aud_dc, seriales_iva_dc or [], seriales_base_dc or [], seriales_base2_dc or [], es_devolucion=True
+            df_aud_dc, seriales_iva_dc or [], seriales_base_dc or [], seriales_base2_dc or [], es_devolucion=True, mapa_otros_imp=mapa_otros_imp
         )
 
         df_dc_prep = pd.DataFrame()
@@ -332,6 +413,7 @@ class ConciliadorAuditoria:
         df_dc_prep['BASE'] = df_res_dc['BASE']
         df_dc_prep['BASE_2'] = df_res_dc['BASE_2']
         df_dc_prep['IVA'] = df_res_dc['IVA']
+        df_dc_prep['OTROS IMPUESTOS'] = df_res_dc['OTROS IMPUESTOS']
         df_dc_prep['Prioridad_Fila'] = 3
         df_dc_prep['Conteo_Pareja'] = 1
         df_dc_prep['Fue_Fuzzy_Match'] = False
@@ -418,10 +500,10 @@ class ConciliadorAuditoria:
         counts_final = df_unificado[mask_matchable_final].groupby('Num.Ext_Clean')['Num.Ext_Clean'].transform('count')
         df_unificado.loc[mask_matchable_final, 'Conteo_Pareja'] = counts_final
 
-        return df_unificado
+        return df_unificado, df_res_dc
     @staticmethod
     def _unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores,
-                                df_aud_dc=None, seriales_iva_dc=None, seriales_base_dc=None, seriales_base2_dc=None):
+                                df_aud_dc=None, seriales_iva_dc=None, seriales_base_dc=None, seriales_base2_dc=None, mapa_otros_imp=None):
         df_dian_prep = df_auditoria.copy()
         df_dian_prep['Fecha'] = ''
         df_dian_prep['BASE_2'] = ''
@@ -480,6 +562,7 @@ class ConciliadorAuditoria:
         df_cont_prep['BASE'] = df_res_auditoria['BASE']
         df_cont_prep['BASE_2'] = df_res_auditoria['BASE_2']
         df_cont_prep['IVA'] = df_res_auditoria['IVA']
+        df_cont_prep['OTROS IMPUESTOS'] = df_res_auditoria['OTROS IMPUESTOS']
         df_cont_prep['Prioridad_Fila'] = 2
         
         for col in COLUMNAS_DIAN_VS_CONT:
@@ -596,9 +679,10 @@ class ConciliadorAuditoria:
         
         df_unificado.loc[mask_single & is_dian, 'DETALLE'] = 'DIAN - Sin Pareja en Contabilidad'
         df_unificado.loc[mask_single & is_cont, 'DETALLE'] = 'CONT - Sin Pareja en DIAN'
+        df_res_dc = None
         if df_aud_dc is not None and not df_aud_dc.empty:
-            df_unificado = ConciliadorAuditoria._conciliar_con_devoluciones(
-                df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex
+            df_unificado, df_res_dc = ConciliadorAuditoria._conciliar_con_devoluciones(
+                df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex, mapa_otros_imp # <--- NUEVO
             )
 
         df_unificado['NIT_Emisor_Clean'] = (
@@ -707,19 +791,19 @@ class ConciliadorAuditoria:
         prefix_doc_group_list = df_unificado['Prefix_Doc_Group'].tolist()
 
         columnas_finales = list(COLUMNAS_DIAN_VS_CONT)
+        if 'OTROS IMPUESTOS' not in columnas_finales:
+            columnas_finales.append('OTROS IMPUESTOS') # Añadimos la columna final
         if 'DETALLE' not in columnas_finales:
             columnas_finales.append('DETALLE')
 
         df_dian_vs_cont = df_unificado[columnas_finales]
         
-        return df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list, dif_nit_list, nombre_emisor_group_list, prefix_doc_group_list
-
-
+        return df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list, dif_nit_list, nombre_emisor_group_list, prefix_doc_group_list, df_res_dc
     def _escribir_excel(
             self, df_resultado, df_auditoria, df_res_auditoria, df_dian_vs_cont,
             parejas_incompletas, df_autoretenedores=None, dif_base=None, dif_iva=None,
             tiene_caracter_especial=None, dif_nit=None, nombre_emisor_group=None,
-            prefix_doc_group=None
+            prefix_doc_group=None, df_res_dc=None, nombre_dc=None
         ):
         if prefix_doc_group is None: prefix_doc_group = []
         if df_autoretenedores is None:
@@ -734,7 +818,6 @@ class ConciliadorAuditoria:
             engine_kwargs = {'keep_vba': True} if self.file_path.suffix.lower() == '.xlsm' else {}
             with pd.ExcelWriter(self.file_path, engine='openpyxl', mode='a', if_sheet_exists='replace',
                                  engine_kwargs=engine_kwargs) as writer:
-                nombre_aud_comp = self.sheet_names['aud_comp']
 
                 df_resultado.to_excel(writer, index=False, sheet_name='Resultados')
                 df_auditoria.to_excel(writer, index=False, sheet_name='auditoria')
@@ -745,160 +828,171 @@ class ConciliadorAuditoria:
                 sheet_auditoria = writer.sheets['auditoria']
                 sheet_dian_vs_cont = writer.sheets['DIAN VS CONT']
 
-                # --- INYECCIÓN Y ORDENAMIENTO EN HOJA ORIGINAL AUD-COMP ---
-                sheet_aud_comp_orig = wb[nombre_aud_comp]
-                header_row = 0
-                col_tercero = 0
-                col_nit = 0
-                col_tipo = 0
+                # --- 1. PREPARAR DICCIONARIO DE AUTORRETENEDORES ---
+                dict_auto = {}
+                col_nit_auto = next((c for c in df_autoretenedores.columns if 'NIT' in str(c).upper()), None)
+                col_coment_auto = next((c for c in df_autoretenedores.columns if 'COMENT' in str(c).upper()), None)
 
-                for r in range(1, 20):
-                    for c in range(1, sheet_aud_comp_orig.max_column + 1):
-                        val = str(sheet_aud_comp_orig.cell(row=r, column=c).value).strip().upper()
-                        if val == 'TERCERO': col_tercero = c
-                        elif val in ['NIT/C.C.', 'NIT']: col_nit = c
-                        elif val == 'TIPO': col_tipo = c
+                if col_nit_auto and col_coment_auto:
+                    for _, r in df_autoretenedores.iterrows():
+                        nit_str = str(r[col_nit_auto]).replace('.0', '').strip()
+                        if nit_str and str(nit_str).lower() != 'nan':
+                            dict_auto[nit_str] = str(r[col_coment_auto]).strip()
 
-                    if col_tercero > 0:
-                        header_row = r
-                        break
-
-                if header_row > 0 and col_tercero > 0:
-                    num_injected_found = 0
-                    for i in range(1, 5):
-                        val = str(sheet_aud_comp_orig.cell(row=header_row, column=col_tercero + i).value).strip().upper()
-                        if val in ['AUTORRETENCION', 'BASE', 'BASE_2', 'IVA']:
-                            num_injected_found += 1
-                        else:
-                            break
+                # --- 2. FUNCIÓN INTERNA PARA INYECTAR COLUMNAS EN CUALQUIER HOJA ---
+                def inyectar_hoja(sheet_name, df_res):
+                    if not sheet_name or sheet_name not in wb.sheetnames or df_res is None or df_res.empty:
+                        return
                     
-                    if num_injected_found > 0:
-                        sheet_aud_comp_orig.delete_cols(col_tercero + 1, amount=num_injected_found)
+                    sheet_orig = wb[sheet_name]
+                    header_row = 0
+                    col_tercero = col_nit = col_tipo = 0
 
-                    dict_auto = {}
-                    col_nit_auto = next((c for c in df_autoretenedores.columns if 'NIT' in str(c).upper()), None)
-                    col_coment_auto = next((c for c in df_autoretenedores.columns if 'COMENT' in str(c).upper()), None)
+                    for r in range(1, 20):
+                        for c in range(1, sheet_orig.max_column + 1):
+                            val = str(sheet_orig.cell(row=r, column=c).value).strip().upper()
+                            if val == 'TERCERO': col_tercero = c
+                            elif val in ['NIT/C.C.', 'NIT']: col_nit = c
+                            elif val == 'TIPO': col_tipo = c
 
-                    if col_nit_auto and col_coment_auto:
-                        for _, r in df_autoretenedores.iterrows():
-                            nit_str = str(r[col_nit_auto]).replace('.0', '').strip()
-                            if nit_str and str(nit_str).lower() != 'nan':
-                                dict_auto[nit_str] = str(r[col_coment_auto]).strip()
+                        if col_tercero > 0:
+                            header_row = r
+                            break
 
-                    row_data_list = []
-                    df_res_records = df_res_auditoria.to_dict('records')
-                    max_row_orig = sheet_aud_comp_orig.max_row
-                    max_col_orig = sheet_aud_comp_orig.max_column
-
-                    for idx, excel_row_idx in enumerate(range(header_row + 1, max_row_orig + 1)):
-                        cell_values = [sheet_aud_comp_orig.cell(row=excel_row_idx, column=c).value for c in range(1, max_col_orig + 1)]
-                        calc_data = df_res_records[idx] if idx < len(df_res_records) else {'BASE': 0, 'BASE_2': 0, 'IVA': 0}
-
-                        nit_val = str(cell_values[col_nit - 1]).replace('.0', '').strip() if col_nit > 0 else ''
-                        comentario_auto = dict_auto.get(nit_val, '')
-
-                        tipo_val = str(cell_values[col_tipo - 1]).strip().upper() if col_tipo > 0 else ''
-                        tercero_val = str(cell_values[col_tercero - 1]).strip().upper() if col_tercero > 0 else ''
-
-                        row_data_list.append({
-                            'original_values': cell_values,
-                            'base': calc_data.get('BASE', 0),
-                            'base_2': calc_data.get('BASE_2', 0),
-                            'iva': calc_data.get('IVA', 0),
-                            'auto': comentario_auto,
-                            'tipo': tipo_val,
-                            'tercero': tercero_val
-                        })
-
-                    max_base_por_tercero = {}
-                    for row in row_data_list:
-                        t_str = str(row.get('tercero', '')).strip().upper()
-                        try:
-                            b_val = float(row.get('base', 0))
-                        except (ValueError, TypeError):
-                            b_val = 0.0
+                    if header_row > 0 and col_tercero > 0:
+                        # Limpiar si ya fueron inyectadas previamente
+                        num_injected_found = 0
+                        for i in range(1, 6): # <--- Cambia de 5 a 6
+                            val = str(sheet_orig.cell(row=header_row, column=col_tercero + i).value).strip().upper()
+                            if val in ['AUTORRETENCION', 'BASE', 'BASE_2', 'IVA', 'OTROS IMPUESTOS']: # <--- NUEVO
+                                num_injected_found += 1
+                            else:
+                                break
                         
-                        if t_str not in max_base_por_tercero or b_val > max_base_por_tercero[t_str]:
-                            max_base_por_tercero[t_str] = b_val
+                        if num_injected_found > 0:
+                            sheet_orig.delete_cols(col_tercero + 1, amount=num_injected_found)
 
-                    def sort_key(row):
-                        auto_str = str(row.get('auto', '')).upper().strip()
-                        tipo_str = str(row.get('tipo', '')).upper().strip()
-                        tercero_str = str(row.get('tercero', '')).strip().upper()
-                        
-                        if 'AUTORRETENEDOR' in auto_str:
-                            prioridad = 1
-                        elif auto_str != '' or 'REGIMEN SIMPLE' in tipo_str:
-                            prioridad = 2
-                        else:
-                            prioridad = 3
+                        row_data_list = []
+                        df_res_records = df_res.to_dict('records')
+                        max_row_orig = sheet_orig.max_row
+                        max_col_orig = sheet_orig.max_column
+
+                        for idx, excel_row_idx in enumerate(range(header_row + 1, max_row_orig + 1)):
+                            cell_values = [sheet_orig.cell(row=excel_row_idx, column=c).value for c in range(1, max_col_orig + 1)]
+                            calc_data = df_res_records[idx] if idx < len(df_res_records) else {'BASE': 0, 'BASE_2': 0, 'IVA': 0, 'OTROS IMPUESTOS': 0}
+
+                            nit_val = str(cell_values[col_nit - 1]).replace('.0', '').strip() if col_nit > 0 else ''
+                            comentario_auto = dict_auto.get(nit_val, '')
+
+                            tipo_val = str(cell_values[col_tipo - 1]).strip().upper() if col_tipo > 0 else ''
+                            tercero_val = str(cell_values[col_tercero - 1]).strip().upper() if col_tercero > 0 else ''
+
+                            row_data_list.append({
+                                'original_values': cell_values,
+                                'base': calc_data.get('BASE', 0),
+                                'base_2': calc_data.get('BASE_2', 0),
+                                'iva': calc_data.get('IVA', 0),
+                                'otros': calc_data.get('OTROS IMPUESTOS', 0), # <--- NUEVO
+                                'auto': comentario_auto,
+                                'tipo': tipo_val,
+                                'tercero': tercero_val
+                            })
+
+                        # Calcular agrupaciones usando valor absoluto (clave para las devoluciones negativas)
+                        max_base_por_tercero = {}
+                        for row in row_data_list:
+                            t_str = str(row.get('tercero', '')).strip().upper()
+                            try:
+                                b_val = float(row.get('base', 0))
+                            except (ValueError, TypeError):
+                                b_val = 0.0
                             
-                        try:
-                            base_val = float(row.get('base', 0))
-                        except (ValueError, TypeError):
-                            base_val = 0.0
+                            if t_str not in max_base_por_tercero or abs(b_val) > abs(max_base_por_tercero[t_str]):
+                                max_base_por_tercero[t_str] = b_val
+
+                        def sort_key(row):
+                            auto_str = str(row.get('auto', '')).upper().strip()
+                            tipo_str = str(row.get('tipo', '')).upper().strip()
+                            tercero_str = str(row.get('tercero', '')).strip().upper()
                             
-                        max_base_grupo = max_base_por_tercero.get(tercero_str, 0.0)
-                        
-                        return (prioridad, -max_base_grupo, tercero_str, base_val)
+                            if 'AUTORRETENEDOR' in auto_str: prioridad = 1
+                            elif auto_str != '' or 'REGIMEN SIMPLE' in tipo_str: prioridad = 2
+                            else: prioridad = 3
+                                
+                            try: base_val = float(row.get('base', 0))
+                            except (ValueError, TypeError): base_val = 0.0
+                                
+                            max_base_grupo = max_base_por_tercero.get(tercero_str, 0.0)
+                            
+                            # Se usa abs() para que las devoluciones se agrupen correctamente con su magnitud
+                            return (prioridad, -abs(max_base_grupo), tercero_str, base_val)
 
-                    row_data_list.sort(key=sort_key)
+                        row_data_list.sort(key=sort_key)
+                        idx_insert = col_tercero + 1
+                        sheet_orig.insert_cols(idx_insert, amount=5)
 
-                    idx_insert = col_tercero + 1
-                    sheet_aud_comp_orig.insert_cols(idx_insert, amount=4)
+                        c_AUTORRETENCION = sheet_orig.cell(row=header_row, column=idx_insert)
+                        c_AUTORRETENCION.value = 'AUTORRETENCION'
+                        c_AUTORRETENCION.fill = PatternFill(start_color="cc99ff", end_color="cc99ff", fill_type="solid")
 
-                    c_AUTORRETENCION = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert)
-                    c_AUTORRETENCION.value = 'AUTORRETENCION'
-                    c_AUTORRETENCION.fill = PatternFill(start_color="cc99ff", end_color="cc99ff", fill_type="solid")
+                        c_base = sheet_orig.cell(row=header_row, column=idx_insert + 1)
+                        c_base.value = 'BASE'
+                        c_base.fill = PatternFill(start_color="339966", end_color="339966", fill_type="solid")
 
-                    c_base = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 1)
-                    c_base.value = 'BASE'
-                    c_base.fill = PatternFill(start_color="339966", end_color="339966", fill_type="solid")
+                        c_base2 = sheet_orig.cell(row=header_row, column=idx_insert + 2)
+                        c_base2.value = 'BASE_2'
+                        c_base2.fill = PatternFill(start_color="33EAEA", end_color="33EAEA", fill_type="solid") 
 
-                    c_base2 = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 2)
-                    c_base2.value = 'BASE_2'
-                    c_base2.fill = PatternFill(start_color="33EAEA", end_color="33EAEA", fill_type="solid") 
+                        c_iva = sheet_orig.cell(row=header_row, column=idx_insert + 3)
+                        c_iva.value = 'IVA'
+                        c_iva.fill = PatternFill(start_color="FF9900", end_color="FF9900", fill_type="solid")
 
-                    c_iva = sheet_aud_comp_orig.cell(row=header_row, column=idx_insert + 3)
-                    c_iva.value = 'IVA'
-                    c_iva.fill = PatternFill(start_color="FF9900", end_color="FF9900", fill_type="solid")
+                        c_otros = sheet_orig.cell(row=header_row, column=idx_insert + 4)
+                        c_otros.value = 'OTROS IMPUESTOS'
+                        c_otros.fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 
-                    for i, row_dict in enumerate(row_data_list):
-                        excel_row_idx = header_row + 1 + i
-                        orig_vals = row_dict['original_values']
+                        for i, row_dict in enumerate(row_data_list):
+                            excel_row_idx = header_row + 1 + i
+                            orig_vals = row_dict['original_values']
 
-                        for c in range(1, idx_insert):
-                            sheet_aud_comp_orig.cell(row=excel_row_idx, column=c).value = orig_vals[c-1]
+                            for c in range(1, idx_insert):
+                                sheet_orig.cell(row=excel_row_idx, column=c).value = orig_vals[c-1]
 
-                        cell_autorretencion = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert)
-                        cell_autorretencion.value = row_dict['auto']
+                            sheet_orig.cell(row=excel_row_idx, column=idx_insert).value = row_dict['auto']
 
-                        c_b = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 1)
-                        c_b.value = row_dict['base']
-                        c_b.number_format = '#,##0.00'
+                            c_b = sheet_orig.cell(row=excel_row_idx, column=idx_insert + 1)
+                            c_b.value = row_dict['base']
+                            c_b.number_format = '#,##0.00'
 
-                        c_b2 = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 2)
-                        c_b2.value = row_dict['base_2']
-                        c_b2.number_format = '#,##0.00'
+                            c_b2 = sheet_orig.cell(row=excel_row_idx, column=idx_insert + 2)
+                            c_b2.value = row_dict['base_2']
+                            c_b2.number_format = '#,##0.00'
 
-                        c_i = sheet_aud_comp_orig.cell(row=excel_row_idx, column=idx_insert + 3)
-                        c_i.value = row_dict['iva']
-                        c_i.number_format = '#,##0.00'
+                            c_i = sheet_orig.cell(row=excel_row_idx, column=idx_insert + 3)
+                            c_i.value = row_dict['iva']
+                            c_i.number_format = '#,##0.00'
 
-                        for c in range(idx_insert, len(orig_vals) + 1):
-                            sheet_aud_comp_orig.cell(row=excel_row_idx, column=c + 4).value = orig_vals[c-1]
+                            c_o = sheet_orig.cell(row=excel_row_idx, column=idx_insert + 4)
+                            c_o.value = row_dict['otros']
+                            c_o.number_format = '#,##0.00'
+                            for c in range(idx_insert, len(orig_vals) + 1):
+                                sheet_orig.cell(row=excel_row_idx, column=c + 5).value = orig_vals[c-1]
 
+                # --- 3. APLICAR LA INYECCIÓN A AMBAS HOJAS ---
+                inyectar_hoja(self.sheet_names['aud_comp'], df_res_auditoria)
+                inyectar_hoja(nombre_dc, df_res_dc)
+
+                # Formateo general numérico
                 for sheet_target, df_target in [
                     (sheet_resultados, df_resultado),
                     (sheet_auditoria, df_auditoria),
                     (sheet_dian_vs_cont, df_dian_vs_cont)
                 ]:
-                    for col_name in ['BASE', 'BASE_2', 'IVA', 'Total']:
+                    for col_name in ['BASE', 'BASE_2', 'IVA','OTROS IMPUESTOS', 'Total']:
                         if col_name in df_target.columns:
                             col_idx = df_target.columns.get_loc(col_name) + 1
                             for row in range(2, len(df_target) + 2):
                                 sheet_target.cell(row=row, column=col_idx).number_format = '#,##0.00'
-
 # --- 3. ESTILOS VISUALES Y CORRECCIÓN DE COLORES EN DIAN VS CONT ---
                 max_row = len(df_dian_vs_cont) + 1
                 max_col = len(df_dian_vs_cont.columns)
@@ -938,7 +1032,8 @@ class ConciliadorAuditoria:
                     'DEVOL - Sin Num.Ext': 'F2DCDB',
                 }
 
-                col_grupo_idx = df_dian_vs_cont.columns.get_loc('Grupo') + 1 if 'Grupo' in df_dian_vs_cont.columns else None
+                col_divisa_idx = df_dian_vs_cont.columns.get_loc('Divisa') + 1 if 'Divisa' in df_dian_vs_cont.columns else None
+                
                 col_motivo_idx = df_dian_vs_cont.columns.get_loc('DETALLE') + 1 if 'DETALLE' in df_dian_vs_cont.columns else None
                 col_doc=df_dian_vs_cont.columns.get_loc('Tipo de documento') + 1 if 'Tipo de documento' in df_dian_vs_cont.columns else None    
                 
@@ -949,9 +1044,10 @@ class ConciliadorAuditoria:
                 for row_idx in range(2, max_row + 1):
                     es_vacio = True
 
-                    if col_grupo_idx:
-                        val_grupo = sheet_dian_vs_cont.cell(row=row_idx, column=col_grupo_idx).value
-                        if val_grupo is not None and str(val_grupo).strip() != '':
+                    # SE MODIFICÓ AQUÍ: Evaluar contenido de columna 'Divisa'
+                    if col_divisa_idx:
+                        val_divisa = sheet_dian_vs_cont.cell(row=row_idx, column=col_divisa_idx).value
+                        if val_divisa is not None and str(val_divisa).strip() != '':
                             es_vacio = False
 
                     motivo = sheet_dian_vs_cont.cell(row=row_idx, column=col_motivo_idx).value if col_motivo_idx else ''

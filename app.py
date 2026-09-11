@@ -30,6 +30,8 @@ from token_engine import FormateadorToken
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.styles import Alignment
+from pivotar_movimientos import TransformadorMovimientos
+
 
 PALETTE = {
     "bg": "#F3F4F6",             
@@ -985,124 +987,48 @@ class ConciliadorApp(tk.Tk):
             messagebox.showwarning("Hoja requerida", "Debes seleccionar la hoja de movimientos.")
             return
 
-        # Pedir ruta para guardar el archivo resultante
-        ruta_salida = filedialog.asksaveasfilename(
-            title="Guardar Movimientos Transformados",
-            defaultextension=".xlsx",
-            initialfile="Movimientos_Transformados.xlsx",
-            filetypes=[("Archivos de Excel", "*.xlsx")]
+        # YA NO SE PIDE RUTA DE SALIDA (ruta_salida). Se guarda en el mismo archivo.
+        respuesta = messagebox.askyesno(
+            "Confirmar pivoteo",
+            "Se agregará una nueva hoja 'MOVS_AUD' a este archivo. ¿Deseas continuar?"
         )
-        
-        if not ruta_salida:
+        if not respuesta:
             return
 
         self._procesando_pivote = True
         self._set_btn_enabled(self.btn_pivotar, False)
         self.lbl_estado_pivote.configure(text="Transformando movimientos...")
 
+        # Modificamos la llamada para quitar ruta_salida
         hilo = threading.Thread(
             target=self._pivotar_en_hilo,
-            args=(self.file_path.get(), hoja, ruta_salida),
+            args=(self.file_path.get(), hoja), 
             daemon=True
         )
         hilo.start()
+    def _pivotar_en_hilo(self, ruta_entrada, hoja):
+        def _callback_progreso(msg):
+            self._cola_eventos.put(("pivote_log", msg))
 
-    def _pivotar_en_hilo(self, ruta_entrada, hoja, ruta_salida):
         try:
-            self._cola_eventos.put(("pivote_log", "Leyendo la hoja de movimientos..."))
-            df = pd.read_excel(ruta_entrada, sheet_name=hoja)
-            
-            self._cola_eventos.put(("pivote_log", "Verificando columnas..."))
-            cols_requeridas = ['DEBITO', 'CREDITO', 'CUENTA', 'NOM. CUENTA']
-            faltantes = [col for col in cols_requeridas if col not in df.columns]
-            
-            if faltantes:
-                raise ErrorUsuario(f"La hoja seleccionada no tiene las columnas requeridas: {', '.join(faltantes)}")
-
-            self._cola_eventos.put(("pivote_log", "Aplicando transformaciones y pivotando..."))
-            
-            # --- Lógica de transformación ---
-            df['DEBITO'] = pd.to_numeric(df['DEBITO'], errors='coerce').fillna(0)
-            df['CREDITO'] = pd.to_numeric(df['CREDITO'], errors='coerce').fillna(0)
-            df['VALOR_NETO'] = df['DEBITO'] - df['CREDITO']
-            df['CUENTA_CONCAT'] = df['CUENTA'].astype(str) + ' - ' + df['NOM. CUENTA'].astype(str)
-
-            cols_a_excluir = ['CUENTA', 'NOM. CUENTA', 'CUENTA_CONCAT', 'DEBITO', 'CREDITO', 'VALOR_NETO']
-            cols_indice = [col for col in df.columns if col not in cols_a_excluir]
-
-            df[cols_indice] = df[cols_indice].fillna('')
-
-            df_pivot = pd.pivot_table(
-                df,
-                index=cols_indice,
-                columns='CUENTA_CONCAT',
-                values='VALOR_NETO',
-                aggfunc='sum',
-                fill_value=0
+            transformador = TransformadorMovimientos(
+                ruta_entrada=ruta_entrada,
+                hoja_origen=hoja,
+                # ruta_salida ha sido eliminada
+                progress_callback=_callback_progreso,
             )
+            ruta_final = transformador.ejecutar()
+            self._cola_eventos.put(("pivote_exito", str(ruta_final)))
 
-            df_final = df_pivot.reset_index()
-            df_final.columns.name = None
-            
-            self._cola_eventos.put(("pivote_log", "Guardando archivo Excel..."))
-            self._cola_eventos.put(("pivote_log", "Aplicando formato de tabla, moneda y ajustando celdas..."))
-            
-            # Usar ExcelWriter con openpyxl para editar el formato
-            with pd.ExcelWriter(ruta_salida, engine='openpyxl') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Movimientos')
-                worksheet = writer.sheets['Movimientos']
-                
-                max_row = df_final.shape[0] + 1
-                max_col = df_final.shape[1]
-                num_cols_indice = len(cols_indice)
-                
-                # 1. Ajustar columnas, envolver texto en encabezados y formato de moneda
-                for idx, col in enumerate(df_final.columns, start=1):
-                    col_letter = get_column_letter(idx)
-                    
-                    # --- Ajuste de Ancho ---
-                    if idx <= num_cols_indice:
-                        # Para las columnas base: ajustamos al texto más largo
-                        longitud_datos = df_final[col].astype(str).map(len).max() if not df_final.empty else 0
-                        max_len = max(longitud_datos, len(str(col)))
-                        worksheet.column_dimensions[col_letter].width = min(max_len + 2, 45)
-                    else:
-                        # Para las columnas pivotadas (Cuentas): ancho fijo para forzar que el título baje
-                        worksheet.column_dimensions[col_letter].width = 20
-                        
-                        # Aplicar formato de moneda (COP) a los valores de esta cuenta
-                        for row in range(2, max_row + 1):
-                            worksheet.cell(row=row, column=idx).number_format = '"$" #,##0.00'
-
-                    # --- Formato del Encabezado (Forzar que el texto baje si es muy largo) ---
-                    celda_encabezado = worksheet.cell(row=1, column=idx)
-                    celda_encabezado.alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
-                
-                # Aumentar la altura de la fila 1 para acomodar los nombres de cuentas en varias líneas
-                worksheet.row_dimensions[1].height = 50
-                
-                # 2. Aplicar formato de Tabla de Excel
-                rango_tabla = f"A1:{get_column_letter(max_col)}{max_row}"
-                tabla = Table(displayName="TablaMovimientos", ref=rango_tabla)
-                estilo = TableStyleInfo(
-                    name="TableStyleMedium2", showFirstColumn=False,
-                    showLastColumn=False, showRowStripes=True, showColumnStripes=False
-                )
-                tabla.tableStyleInfo = estilo
-                worksheet.add_table(tabla)
-                
-                # 3. Fijar SOLAMENTE los encabezados (Fila 1)
-                worksheet.freeze_panes = "A2"
-
-            self._cola_eventos.put(("pivote_log", "Guardado finalizado exitosamente."))
-            self._cola_eventos.put(("pivote_exito", ruta_salida))
-            
         except ErrorUsuario as e:
             self._cola_eventos.put(("pivote_error_usuario", str(e)))
+        except ErrorSistema as e:
+            self._cola_eventos.put(("pivote_error_sistema", str(e)))
         except Exception as e:
             logger.exception("Error al pivotar movimientos")
-            self._cola_eventos.put(("pivote_error_sistema", f"Ocurrió un error inesperado: {e}"))
-
+            self._cola_eventos.put(
+                ("pivote_error_sistema", f"Ocurrió un error inesperado: {e}")
+            )
     def _finalizar_pivote(self):
         self._procesando_pivote = False
         self._set_btn_enabled(self.btn_pivotar, True)
