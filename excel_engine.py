@@ -244,14 +244,25 @@ class ConciliadorAuditoria:
         df_full.loc[es_personales_full, 'DETALLE'] = 'DIAN: ' + df_full.loc[es_personales_full, 'CONCEPTO'].astype(str)
         self._reportar(f"Se identificaron y protegieron {es_personales_full.sum()} registros Personales primero.")
 
-        # --- 2. EXCLUSIÓN DE EMITIDOS Y APPLICATION RESPONSE ---
+# --- 2. EXCLUSIÓN DE EMITIDOS Y APPLICATION RESPONSE ---
         col_grupo = next((c for c in df_full.columns if str(c).strip().lower() == 'grupo'), None)
-        if col_grupo:
-            mask_emi = df_full[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
-            # Eliminamos emitidos SOLO si no fueron marcados previamente como personales
-            df_full = df_full[~(mask_emi & (df_full['DETALLE'] == ''))]
-
         col_doc = next((c for c in df_full.columns if str(c).strip().lower() == 'tipo de documento'), None)
+
+        if col_grupo:
+            # Detectamos todos los "emitidos"
+            mask_emi = df_full[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
+            
+            if col_doc:
+                # Detectamos cuáles son Documento Soporte
+                mask_soporte = df_full[col_doc].astype(str).str.contains('soporte', case=False, na=False)
+                # Excluimos los emitidos ÚNICAMENTE si NO son Documentos Soporte
+                mask_a_eliminar = mask_emi & ~mask_soporte
+            else:
+                mask_a_eliminar = mask_emi
+                
+            # Eliminamos los emitidos (que no son soporte) SOLO si no fueron marcados previamente como personales
+            df_full = df_full[~(mask_a_eliminar & (df_full['DETALLE'] == ''))]
+
         if col_doc:
             mask_app_response = df_full[col_doc].astype(str).str.contains('Application response', case=False, na=False)
             # Eliminamos application response SOLO si no fueron marcados como personales
