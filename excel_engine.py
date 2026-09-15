@@ -11,7 +11,7 @@ from manager_autorretenedores import GestorAutorretenedores
 
 from config import COLUMNAS_DIAN_VS_CONT, OUTPUT_SHEETS_TO_HIDE, ORDEN, RED_FILL_COLOR, CARACTERES_ESPECIALES, DUPLICADO_FILL_COLOR
 from errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, logger
-
+from acta_errores import GeneradorActaErrores
 
 class ConciliadorAuditoria:
     def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None,
@@ -335,9 +335,8 @@ class ConciliadorAuditoria:
             df_aud_comp, self.seriales_iva, self.seriales_base, self.seriales_base2, self.seriales_ret,
             mapa_otros_imp=mapa_otros_imp  # <--- NUEVO
         )
-
         self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
-        df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial, dif_nit, nombre_emisor_group, prefix_doc_group, df_res_dc, box_color_list = self._unificar_dian_vs_cont(
+        df_unificado_completo, df_dian_vs_cont, parejas_incompletas, dif_base, dif_iva, tiene_caracter_especial, dif_nit, nombre_emisor_group, prefix_doc_group, df_res_dc, box_color_list = self._unificar_dian_vs_cont(
             df_auditoria, df_aud_comp, df_res_auditoria, df_autoretenedores,
             df_aud_dc=df_aud_dc, seriales_iva_dc=self.seriales_iva_dc,
             seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc,
@@ -360,13 +359,15 @@ class ConciliadorAuditoria:
             prefix_doc_group=prefix_doc_group,
             df_res_dc=df_res_dc,            
             nombre_dc=nombre_dc,
-            box_color_list=box_color_list # <--- NUEVA LISTA ENVIADA
+            box_color_list=box_color_list 
         )
+
         self._reportar("Proceso completado con éxito.")
         return {
             "filas_procesadas": len(df_full),
             "filas_personales": int(es_personales_full.sum()),
             "filas_sin_pareja": int(sum(parejas_incompletas)),
+            "df_completo": df_unificado_completo 
         }
     @staticmethod
     def _procesar_aud_comp(df_aud_comp, seriales_iva, seriales_base, seriales_base2, seriales_ret=None, es_devolucion=False, mapa_otros_imp=None):
@@ -852,7 +853,7 @@ class ConciliadorAuditoria:
 
         df_dian_vs_cont = df_unificado[columnas_finales]
         box_color_list = df_unificado['Box_Color'].tolist()
-        return df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list, dif_nit_list, nombre_emisor_group_list, prefix_doc_group_list, df_res_dc, box_color_list
+        return df_unificado, df_dian_vs_cont, parejas_incompletas, dif_base_list, dif_iva_list, tiene_caracter_especial_list, dif_nit_list, nombre_emisor_group_list, prefix_doc_group_list, df_res_dc, box_color_list
     def _escribir_excel(
             self, df_resultado, df_auditoria, df_res_auditoria, df_dian_vs_cont,
             parejas_incompletas, df_autoretenedores=None, dif_base=None, dif_iva=None,
@@ -1139,8 +1140,8 @@ class ConciliadorAuditoria:
 
                     motivo = sheet_dian_vs_cont.cell(row=row_idx, column=col_motivo_idx).value if col_motivo_idx else ''
                     
-                    color_llenado_hex = "627FF0" 
-                    color_vacio_hex = "A6B7F5"   
+                    color_llenado_hex = "b5c0e8" 
+                    color_vacio_hex = "d3daf2"   
                     
                     es_incompleta = parejas_incompletas[row_idx - 2] if (row_idx - 2) < len(parejas_incompletas) else True
                     

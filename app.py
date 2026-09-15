@@ -136,7 +136,9 @@ class ConciliadorApp(tk.Tk):
         self._procesando_pdf_iva = False
         self.column_vars = {}
         self.column_vars_dc = {}
+        self.tipo_vars = {}
         self.current_page = None
+        self.df_acta_errores = None
 
         self._setup_styles()
         self._build_ui()
@@ -186,6 +188,8 @@ class ConciliadorApp(tk.Tk):
             self.hoja_pivote_var.set("")
         if hasattr(self, "lbl_estado_pivote"):
             self.lbl_estado_pivote.configure(text="")
+        if hasattr(self, "_poblar_checklist_tipos"):  # NUEVO
+            self._poblar_checklist_tipos([])
 
         for widget in self.tab_preview.winfo_children():
             widget.destroy()
@@ -195,10 +199,13 @@ class ConciliadorApp(tk.Tk):
         gc.collect()
         
         self._generador_iva = None
+        self.df_acta_errores = None
         if hasattr(self, "btn_exportar_pdf"):
             self.btn_exportar_pdf.configure(state="disabled")
         if hasattr(self, "btn_vista_previa_pdf"):
             self.btn_vista_previa_pdf.configure(state="disabled")
+        if hasattr(self, "btn_acta_errores"):  
+            self.btn_acta_errores.configure(state="disabled")
 
         self._set_estado("Sesión liberada. El archivo quedó disponible para otros programas.")
             
@@ -652,17 +659,6 @@ class ConciliadorApp(tk.Tk):
         self.nombre_var = tk.StringVar()
         ttk.Entry(form_frame, textvariable=self.nombre_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
 
-        ttk.Label(form_frame, text="Comentario:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
-        self.comentario_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.comentario_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
-
-        ttk.Label(form_frame, text="Resolucion:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
-        self.resolucion_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.resolucion_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
-
-        ttk.label(form_frame, text="Fecha Resolucion:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
-        self.fecha_resolucion_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=self.fecha_resolucion_var, width=20).pack(side=tk.LEFT, padx=(0, 20))
 
 
 
@@ -1157,34 +1153,121 @@ class ConciliadorApp(tk.Tk):
         self.vista_previa.pack(fill=tk.BOTH, expand=True)
 
     def _build_tab_pivotar(self):
-            wrapper = ttk.Frame(self.tab_pivote_movimientos, padding=(0, 0, 0, 0), style="TFrame")
-            wrapper.pack(fill=tk.BOTH, expand=True)
-            ttk.Label(wrapper, text="Reestructuración de Movimientos", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
+        wrapper = ttk.Frame(self.tab_pivote_movimientos, padding=(0, 0, 0, 0), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Reestructuración de Movimientos", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
-            card = self._card(wrapper, fill=tk.X, pady=(0, 20))
-            ttk.Label(card, text="Hojas de origen", style="CardHeader.TLabel").pack(anchor="w")
-            ttk.Label(card, text="Selecciona la hoja de movimientos para aplicar el formato.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
+        # PANEL 1: Selección de Hoja
+        card = self._card(wrapper, fill=tk.X, pady=(0, 20))
+        ttk.Label(card, text="Hoja de origen", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(card, text="Selecciona la hoja de movimientos para cargar sus tipos documentales.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 20))
 
-            # Selector de la hoja
-            fila_hoja = ttk.Frame(card, style="Card.TFrame")
-            fila_hoja.pack(fill=tk.X)
-            ttk.Label(fila_hoja, text="Hoja de Movimientos", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 30))
-            
-            self.hoja_pivote_var = tk.StringVar()
-            self.combo_hoja_pivote = ttk.Combobox(fila_hoja, textvariable=self.hoja_pivote_var, width=50, state="readonly", cursor="hand2")
-            self.combo_hoja_pivote.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        fila_hoja = ttk.Frame(card, style="Card.TFrame")
+        fila_hoja.pack(fill=tk.X)
+        ttk.Label(fila_hoja, text="Hoja de Movimientos", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 30))
+        
+        self.hoja_pivote_var = tk.StringVar()
+        self.combo_hoja_pivote = ttk.Combobox(fila_hoja, textvariable=self.hoja_pivote_var, width=50, state="readonly", cursor="hand2")
+        self.combo_hoja_pivote.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Vincular el evento para escanear los TIPOS automáticamente
+        self.combo_hoja_pivote.bind("<<ComboboxSelected>>", self._refrescar_tipos_movimientos)
 
-            # Botón y estado
-            fila_accion = ttk.Frame(card, style="Card.TFrame")
-            fila_accion.pack(fill=tk.X, pady=(24, 0))
+        # PANEL 2: Configuración de Tipos (NUEVO)
+        card_tipos = self._card(wrapper, fill=tk.BOTH, expand=True, pady=(0, 20))
+        ttk.Label(card_tipos, text="Tipos de Documento a Procesar", style="CardHeader.TLabel").pack(anchor="w")
+        ttk.Label(card_tipos, text="Selecciona los prefijos que se incluirán y pivotarán en la hoja MOVS_AUD.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 12))
+
+        # Botones de acción rápida para marcar
+        fila_botones = ttk.Frame(card_tipos, style="Card.TFrame")
+        fila_botones.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(fila_botones, text="☑ Marcar Todos", command=lambda: self._marcar_todos_tipos(True), style="Toggle.TButton").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(fila_botones, text="☐ Desmarcar Todos", command=lambda: self._marcar_todos_tipos(False), style="Toggle.TButton").pack(side=tk.LEFT)
+
+        self.lista_tipos_movs = ScrollableChecklist(card_tipos, height=180)
+        self.lista_tipos_movs.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self._poblar_checklist_tipos([])
+
+        # ACCIONES 
+        fila_accion = ttk.Frame(wrapper, style="TFrame")
+        fila_accion.pack(fill=tk.X, pady=(0, 20))
+        
+        self.btn_pivotar = self._btn_primary(fila_accion, "⇆  Transformar y Exportar", self._on_pivotar_movimientos)
+        self.btn_pivotar.pack(side=tk.LEFT)
+        
+        self.lbl_estado_pivote = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel", background=PALETTE["bg"])
+        self.lbl_estado_pivote.pack(side=tk.LEFT, padx=(20, 0))
+        
+        self._procesando_pivote = False
+
+    def _marcar_todos_tipos(self, valor):
+        for var in getattr(self, 'tipo_vars', {}).values():
+            var.set(valor)
+
+    def _refrescar_tipos_movimientos(self, *_):
+        ruta = self.file_path.get()
+        hoja = self.hoja_pivote_var.get().strip()
+        
+        if not ruta or not hoja or hoja not in self.hojas_disponibles:
+            self._poblar_checklist_tipos([])
+            return
+
+        # Limpiar y mostrar estado de carga
+        self._poblar_checklist_tipos([])
+        ttk.Label(self.lista_tipos_movs.inner, text="⏳ Extrayendo tipos únicos...", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
             
-            self.btn_pivotar = self._btn_primary(fila_accion, "⇆  Transformar y Exportar", self._on_pivotar_movimientos)
-            self.btn_pivotar.pack(side=tk.LEFT)
+        def _tarea():
+            try:
+                # Leer solo encabezados para identificar la columna TIPO rápido
+                df_cols = pd.read_excel(ruta, sheet_name=hoja, nrows=0)
+                col_tipo = [c for c in df_cols.columns if str(c).strip().upper() == "TIPO"]
+
+                if not col_tipo:
+                    self.after(0, lambda: self._poblar_checklist_tipos([]))
+                    return
+
+                # Leer únicamente esa columna y obtener únicos limpios
+                df = pd.read_excel(ruta, sheet_name=hoja, usecols=[col_tipo[0]])
+                tipos_unicos = df[col_tipo[0]].dropna().astype(str).str.strip().str.upper().unique()
+                tipos_unicos = sorted([t for t in tipos_unicos if t])
+
+                self.after(0, lambda: self._poblar_checklist_tipos(tipos_unicos))
+            except Exception as e:
+                logger.warning(f"Error al extraer los tipos de la hoja {hoja}: {e}")
+                self.after(0, lambda: self._poblar_checklist_tipos([]))
+                
+        threading.Thread(target=_tarea, daemon=True).start()
+
+    def _poblar_checklist_tipos(self, tipos):
+        self.lista_tipos_movs.canvas.unbind("<Configure>")
+        for widget in self.lista_tipos_movs.inner.winfo_children():
+            widget.destroy()
+
+        self.tipo_vars = {}
+
+        if not tipos:
+            ttk.Label(self.lista_tipos_movs.inner, text="Selecciona una hoja válida que contenga la columna 'TIPO'.", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
+        else:
+            prefijos_default = TransformadorMovimientos.PREFIJOS_PERMITIDOS
             
-            self.lbl_estado_pivote = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel")
-            self.lbl_estado_pivote.pack(side=tk.LEFT, padx=(20, 0))
+            # Utilizar un grid responsivo para aprovechar todo el ancho horizontal
+            grid_frame = tk.Frame(self.lista_tipos_movs.inner, bg=PALETTE["surface"])
+            grid_frame.pack(fill=tk.X, padx=8, pady=8)
             
-            self._procesando_pivote = False
+            columnas_grid = 6  # Mostrar en 6 columnas compactas
+            for i, tipo in enumerate(tipos):
+                row = i // columnas_grid
+                col = i % columnas_grid
+                
+                # Por defecto marcar los que coinciden con los oficiales
+                var = tk.BooleanVar(value=tipo.startswith(prefijos_default))
+                self.tipo_vars[tipo] = var
+                
+                chk = ttk.Checkbutton(grid_frame, text=tipo, variable=var, style="Card.TCheckbutton")
+                chk.grid(row=row, column=col, sticky="w", padx=(0, 20), pady=6)
+                
+        self.lista_tipos_movs.canvas.bind("<Configure>", lambda e: self.lista_tipos_movs.canvas.itemconfigure(self.lista_tipos_movs._window, width=e.width))
+        self.lista_tipos_movs._actualizar_scrollregion()
 
     def _on_pivotar_movimientos(self):
         if self._procesando_pivote:
@@ -1199,7 +1282,12 @@ class ConciliadorApp(tk.Tk):
             messagebox.showwarning("Hoja requerida", "Debes seleccionar la hoja de movimientos.")
             return
 
-        # YA NO SE PIDE RUTA DE SALIDA (ruta_salida). Se guarda en el mismo archivo.
+        # Capturar tipos seleccionados
+        tipos_seleccionados = [t for t, var in self.tipo_vars.items() if var.get()]
+        if not tipos_seleccionados:
+            messagebox.showwarning("Tipos requeridos", "Debes seleccionar al menos un tipo de documento para procesar.")
+            return
+
         respuesta = messagebox.askyesno(
             "Confirmar pivoteo",
             "Se agregará una nueva hoja 'MOVS_AUD' a este archivo. ¿Deseas continuar?"
@@ -1211,22 +1299,24 @@ class ConciliadorApp(tk.Tk):
         self._set_btn_enabled(self.btn_pivotar, False)
         self.lbl_estado_pivote.configure(text="Transformando movimientos...")
 
-        # Modificamos la llamada para quitar ruta_salida
+        # Pasamos la lista de tipos al hilo
         hilo = threading.Thread(
             target=self._pivotar_en_hilo,
-            args=(self.file_path.get(), hoja), 
+            args=(self.file_path.get(), hoja, tipos_seleccionados), 
             daemon=True
         )
         hilo.start()
-    def _pivotar_en_hilo(self, ruta_entrada, hoja):
+
+    def _pivotar_en_hilo(self, ruta_entrada, hoja, tipos_seleccionados):
         def _callback_progreso(msg):
             self._cola_eventos.put(("pivote_log", msg))
 
         try:
+            # Enviamos los prefijos customizados al motor
             transformador = TransformadorMovimientos(
                 ruta_entrada=ruta_entrada,
                 hoja_origen=hoja,
-                # ruta_salida ha sido eliminada
+                prefijos_permitidos=tipos_seleccionados,
                 progress_callback=_callback_progreso,
             )
             ruta_final = transformador.ejecutar()
@@ -1241,6 +1331,7 @@ class ConciliadorApp(tk.Tk):
             self._cola_eventos.put(
                 ("pivote_error_sistema", f"Ocurrió un error inesperado: {e}")
             )
+
     def _finalizar_pivote(self):
         self._procesando_pivote = False
         self._set_btn_enabled(self.btn_pivotar, True)
@@ -1376,6 +1467,10 @@ class ConciliadorApp(tk.Tk):
         panel_acciones.pack(fill=tk.X, pady=(0, 20))
         self.btn_ejecutar = self._btn_primary(panel_acciones, "▶  Iniciar Conciliación", self._on_ejecutar)
         self.btn_ejecutar.pack(side=tk.LEFT)
+
+        self.btn_acta_errores = ttk.Button(panel_acciones, text="📄  Generar Acta", style="Secondary.TButton", command=self._on_generar_acta, cursor="hand2", state="disabled")
+        self.btn_acta_errores.pack(side=tk.LEFT, padx=(16, 0))
+
         btn_logs = ttk.Button(panel_acciones, text="📁  Abrir Logs", style="Secondary.TButton", command=self._on_abrir_logs, cursor="hand2")
         btn_logs.pack(side=tk.LEFT, padx=(16, 0))
 
@@ -1551,6 +1646,34 @@ class ConciliadorApp(tk.Tk):
     def _on_progreso(self, mensaje):
         self._cola_eventos.put(("log", mensaje))
 
+    def _on_generar_acta(self):
+        if not hasattr(self, 'df_acta_errores') or self.df_acta_errores is None:
+            messagebox.showwarning("Sin datos", "No hay datos de auditoría disponibles. Ejecuta la conciliación primero.")
+            return
+
+        from acta_errores import GeneradorActaErrores
+        
+        self.btn_acta_errores.configure(state="disabled")
+        self._set_estado("Generando Acta de Errores...")
+        
+        try:
+            generador = GeneradorActaErrores(self.df_acta_errores, self.file_path.get())
+            ruta_pdf = generador.generar()
+            
+            if ruta_pdf:
+                self._agregar_log(f"Acta PDF guardada en: {ruta_pdf}")
+                messagebox.showinfo("Acta Generada", f"El acta se guardó correctamente en:\n{ruta_pdf}")
+            else:
+                self._agregar_log("El usuario canceló el guardado del Acta PDF.")
+                
+        except Exception as e:
+            logger.exception("Error al generar el acta de errores")
+            self._agregar_log(f"Error al generar Acta: {e}")
+            messagebox.showerror("Error", f"No se pudo generar el acta:\n{e}")
+        finally:
+            self.btn_acta_errores.configure(state="normal")
+            self._set_estado("Listo")
+
     def _procesar_cola(self):
         try:
             while True:
@@ -1568,6 +1691,9 @@ class ConciliadorApp(tk.Tk):
                         f"Personales excluidas: {payload['filas_personales']} | "
                         f"Sin pareja: {payload['filas_sin_pareja']}"
                     )
+                    self.df_acta_errores = payload.get("df_completo")
+                    if self.df_acta_errores is not None:
+                        self.btn_acta_errores.configure(state="normal")
                     messagebox.showinfo("Completado", "La conciliación finalizó con éxito.")
                 elif tipo == "error_usuario":
                     self._finalizar_ejecucion(exito=False)

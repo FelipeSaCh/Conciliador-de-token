@@ -20,17 +20,20 @@ class TransformadorMovimientos:
     """
 
     COLUMNAS_REQUERIDAS = ["DEBITO", "CREDITO", "CUENTA", "NOM. CUENTA", "TIPO"]
-    PREFIJOS_PERMITIDOS = ("FC", "GS", "DC", "DS", "GC", "CG","GI")
+    PREFIJOS_PERMITIDOS = ("FC", "GS", "DC", "DS", "GC", "CG", "GI")
     HOJA_DESTINO = "MOVS_AUD"
 
     def __init__(
         self,
         ruta_entrada: Union[str, Path],
         hoja_origen: str,
+        prefijos_permitidos: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
     ):
         self.ruta_entrada = Path(ruta_entrada)
         self.hoja_origen = hoja_origen
+        # Usamos los prefijos enviados por la interfaz o caemos a los por defecto
+        self.prefijos_permitidos = tuple(prefijos_permitidos) if prefijos_permitidos is not None else self.PREFIJOS_PERMITIDOS
         self.progress_callback = progress_callback
 
     def _notificar(self, mensaje: str) -> None:
@@ -99,24 +102,28 @@ class TransformadorMovimientos:
             raise ErrorUsuario("El archivo no contiene la columna 'TIPO' o 'Tipo'.")
 
         tipo_clean = df_calc["Tipo"].astype(str).str.strip().str.upper()
-        mask_prefijo = tipo_clean.str.startswith(self.PREFIJOS_PERMITIDOS)
+        
+        if not self.prefijos_permitidos:
+            raise ErrorUsuario("No se seleccionó ningún tipo de documento permitido.")
+
+        mask_prefijo = tipo_clean.str.startswith(self.prefijos_permitidos)
         df_calc = df_calc[mask_prefijo].copy()
 
         if df_calc.empty:
             raise ErrorUsuario(
-                "No se encontraron registros que inicien con los prefijos permitidos (FC, GS, DC, DS, GC)."
+                f"No se encontraron registros que inicien con los tipos seleccionados: {', '.join(self.prefijos_permitidos)}"
             )
 
-        # --- NUEVO: Ignorar por completo los registros anulados ---
+        # --- Ignorar por completo los registros anulados ---
         if "DETALLE" in df_calc.columns:
             mask_anulado = df_calc["DETALLE"].astype(str).str.contains("ANULADO", case=False, na=False)
             df_calc = df_calc[~mask_anulado].copy()
 
-        # 3. Eliminar columnas que no se necesitan (SE ELIMINÓ 'DETALLE' DE LA LISTA)
+        # 3. Eliminar columnas que no se necesitan
         cols_a_borrar = ["CHEQ.NO", "ELABORO", "SUC.PTO","CCOSTO","SCCOSTO","REF1","REF2","REF3","REF4","No. AUTORIZACION(DATAFONO)"]
         df_calc.drop(columns=[c for c in cols_a_borrar if c in df_calc.columns], inplace=True, errors='ignore')
 
-        # 4. Consolidar AÑO, MES, DIA en "Fecha" (Ej: Ago-23-2026)
+        # 4. Consolidar AÑO, MES, DIA en "Fecha"
         if all(c in df_calc.columns for c in ["Año", "Mes", "Dia"]):
             meses_espanol = {
                 1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
@@ -126,7 +133,6 @@ class TransformadorMovimientos:
                 '01': 'Ene', '02': 'Feb', '03': 'Mar', '04': 'Abr', '05': 'May', '06': 'Jun',
                 '07': 'Jul', '08': 'Ago', '09': 'Sep'
             }
-            # Mapeo del mes, día a 2 dígitos y año sin decimales (.0)
             mes_str = df_calc["Mes"].map(meses_espanol).fillna(df_calc["Mes"].astype(str))
             dia_str = df_calc["Dia"].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(2)
             ano_str = df_calc["Año"].astype(str).str.replace(r'\.0$', '', regex=True)
@@ -154,26 +160,22 @@ class TransformadorMovimientos:
         cols_sistema = ["CUENTA", "NOM. CUENTA", "CUENTA_CONCAT", "DEBITO", "CREDITO", "VALOR_NETO"]
         cols_descriptivas = [c for c in df_calc.columns if c not in claves_agrupacion and c not in cols_sistema]
 
-        # --- NUEVO: Selección de DETALLE evaluando la prioridad de la cuenta ---
+        # --- Selección de DETALLE evaluando la prioridad de la cuenta ---
         df_detalle_elegido = None
         if "DETALLE" in cols_descriptivas:
-            cols_descriptivas.remove("DETALLE") # Evitamos que el `.first()` genérico tome cualquiera
+            cols_descriptivas.remove("DETALLE")
             
             df_det_temp = df_calc[claves_agrupacion + ["CUENTA", "DETALLE"]].copy()
             prefijos_detalle = ('6', '5', '7', '15')
             
-            # Asignamos prioridad 1 a las cuentas solicitadas, prioridad 2 a las demás
             df_det_temp["Prioridad"] = df_det_temp["CUENTA"].astype(str).str.strip().apply(
                 lambda x: 1 if x.startswith(prefijos_detalle) else 2
             )
             
-            # Al ordenar, los movimientos con "Prioridad 1" quedan arriba en su grupo
             df_det_temp.sort_values(by=claves_agrupacion + ["Prioridad"], inplace=True)
-            
-            # Al eliminar duplicados, siempre conservaremos el "DETALLE" del movimiento prioritario
             df_detalle_elegido = df_det_temp.drop_duplicates(subset=claves_agrupacion, keep='first')[claves_agrupacion + ["DETALLE"]]
 
-        # 8. Unificar importes (Suma) pivotando ÚNICAMENTE por la llave principal
+        # 8. Unificar importes
         df_pivot = pd.pivot_table(
             df_calc,
             index=claves_agrupacion,
@@ -184,45 +186,36 @@ class TransformadorMovimientos:
         ).reset_index()
         df_pivot.columns.name = None
 
-        # 9. Recuperar datos descriptivos tomando la primera ocurrencia (.first()) para evitar desdoblamientos
+        # 9. Recuperar datos descriptivos
         if cols_descriptivas:
             df_desc = df_calc.groupby(claves_agrupacion, as_index=False)[cols_descriptivas].first()
             df_final = pd.merge(df_pivot, df_desc, on=claves_agrupacion, how="left")
         else:
             df_final = df_pivot
             
-        # --- NUEVO: Fusionar el DETALLE elegido y reincorporarlo ---
+        # Fusionar el DETALLE elegido y reincorporarlo
         if df_detalle_elegido is not None:
             df_final = pd.merge(df_final, df_detalle_elegido, on=claves_agrupacion, how="left")
             cols_descriptivas.append("DETALLE")
 
-        # 10. Ordenar columnas (Descriptivas a la izquierda, Cuentas monetarias reordenadas a la derecha)
-        # 10.1 Definir el orden fijo de las columnas descriptivas (Se añadió DETALLE)
+        # 10. Ordenar columnas
         orden_ideal = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DOCRELA", "NIT", "DETALLE"]
-        
-        # Recolectar las columnas descriptivas que existen en df_final y mantener el orden ideal
         cols_indice_ordenadas = [c for c in orden_ideal if c in df_final.columns]
-        # Agregar cualquier otra descriptiva sobrante que no estaba en el orden_ideal
         cols_indice_ordenadas += [c for c in df_final.columns if c in cols_descriptivas and c not in cols_indice_ordenadas]
         
-        # 10.2 Obtener la lista de las columnas de cuentas (las pivotadas)
         cols_cuentas = [c for c in df_final.columns if c not in cols_indice_ordenadas]
         
-        # 10.3 Lógica de reordenamiento de cuentas basado en prefijos prioritarios
         prefijos_prioridad = ('2365', '2367', '2368', '15', '6', '5', '22')
-        
         cuentas_priorizadas = []
         cuentas_restantes = []
 
-        # Separar las cuentas conservando el nombre original exacto (la variable 'c')
         for c in cols_cuentas:
             c_str = str(c).strip()
             if c_str.startswith(prefijos_prioridad):
-                cuentas_priorizadas.append(c) # Guardamos 'c' original, no 'c_str'
+                cuentas_priorizadas.append(c)
             else:
-                cuentas_restantes.append(c)   # Guardamos 'c' original
+                cuentas_restantes.append(c)
                 
-        # Función auxiliar para determinar la jerarquía
         def obtener_jerarquia(cuenta):
             cuenta_str = str(cuenta).strip()
             for i, prefijo in enumerate(prefijos_prioridad):
@@ -230,16 +223,10 @@ class TransformadorMovimientos:
                     return i
             return 999
             
-        # Ordenar priorizadas por jerarquía y alfabéticamente (evaluando como string seguro)
         cuentas_priorizadas.sort(key=lambda x: (obtener_jerarquia(x), str(x).strip()))
-        
-        # Ordenar las restantes alfabéticamente
         cuentas_restantes.sort(key=lambda x: str(x).strip())
         
-        # Unir las listas reordenadas
         cols_cuentas_reordenadas = cuentas_priorizadas + cuentas_restantes
-
-        # 10.4 Ensamblar el DataFrame final con el nuevo orden total
         df_final = df_final[cols_indice_ordenadas + cols_cuentas_reordenadas]
 
         return df_final, cols_indice_ordenadas
@@ -248,10 +235,9 @@ class TransformadorMovimientos:
         self._notificar(f"Guardando resultados en la hoja '{self.HOJA_DESTINO}' del archivo original...")
         self._notificar("Aplicando estilos personalizados, bandas alternas y ajuste dinámico de celdas...")
 
-        # Definición de paleta de colores y estilos visuales
-        FILL_HEADER = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")  # Azul oscuro / Slate
+        FILL_HEADER = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
         FILL_ROW_EVEN = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-        FILL_ROW_ODD = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")  # Gris muy claro
+        FILL_ROW_ODD = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
 
         FONT_HEADER = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         FONT_BODY = Font(name="Calibri", size=10, color="000000")
@@ -265,10 +251,8 @@ class TransformadorMovimientos:
         ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
         ALIGN_RIGHT = Alignment(horizontal="right", vertical="center")
 
-        # Determinar si hay que mantener macros o vba basado en la extensión
         engine_kwargs = {'keep_vba': True} if self.ruta_entrada.suffix.lower() == '.xlsm' else {}
 
-        # SE MODIFICÓ AQUÍ: 'mode=a' y 'if_sheet_exists=replace' para guardar en el mismo libro
         with pd.ExcelWriter(self.ruta_entrada, engine="openpyxl", mode='a', if_sheet_exists='replace', engine_kwargs=engine_kwargs) as writer:
             df_final.to_excel(writer, index=False, sheet_name=self.HOJA_DESTINO)
             worksheet = writer.sheets[self.HOJA_DESTINO]
@@ -277,7 +261,6 @@ class TransformadorMovimientos:
             max_col = df_final.shape[1]
             num_cols_indice = len(cols_indice)
 
-            # 1. Estilizado de Encabezados con altura compacta
             max_lineas_encabezado = 1
 
             for col_idx, col_nombre in enumerate(df_final.columns, start=1):
@@ -293,7 +276,6 @@ class TransformadorMovimientos:
                 longitud_texto = len(texto_col)
 
                 if col_idx <= num_cols_indice:
-                    # Columnas base: ajuste por contenido (Usando .str.len() que es seguro contra floats/NaN)
                     if not df_final.empty:
                         max_len_series = df_final[col_nombre].astype(str).str.len().max()
                         longitud_datos = int(max_len_series) if pd.notna(max_len_series) else 0
@@ -304,17 +286,14 @@ class TransformadorMovimientos:
                     worksheet.column_dimensions[col_letter].width = min(max(ancho_calculado, 12), 45)
                     lineas = (longitud_texto // 35) + 1
                 else:
-                    # Columnas pivotadas (Cuentas): ancho más amplio para evitar filas de 4 líneas
                     worksheet.column_dimensions[col_letter].width = 30
                     lineas = (longitud_texto // 30) + 1
 
                 if lineas > max_lineas_encabezado:
                     max_lineas_encabezado = lineas
 
-            # Limitar la altura de la fila 1 entre 24 y 32 puntos como máximo
             worksheet.row_dimensions[1].height = min(max(24, max_lineas_encabezado * 14), 32)
             
-            # 2. Estilizado de Filas de Datos (Banded Rows / Striped)
             for row_idx in range(2, max_row + 1):
                 fill_row = FILL_ROW_EVEN if row_idx % 2 == 0 else FILL_ROW_ODD
                 worksheet.row_dimensions[row_idx].height = 20
@@ -331,5 +310,4 @@ class TransformadorMovimientos:
                         celda.alignment = ALIGN_RIGHT
                         celda.number_format = '"$" #,##0.00'
 
-            # 3. Congelar fila de encabezados
             worksheet.freeze_panes = "A2"
