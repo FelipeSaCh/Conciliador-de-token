@@ -20,7 +20,7 @@ class TransformadorMovimientos:
     """
 
     COLUMNAS_REQUERIDAS = ["DEBITO", "CREDITO", "CUENTA", "NOM. CUENTA", "TIPO"]
-    PREFIJOS_PERMITIDOS = ("FC", "GS", "DC", "DS", "GC", "CG")
+    PREFIJOS_PERMITIDOS = ("FC", "GS", "DC", "DS", "GC", "CG","GI")
     HOJA_DESTINO = "MOVS_AUD"
 
     def __init__(
@@ -107,8 +107,13 @@ class TransformadorMovimientos:
                 "No se encontraron registros que inicien con los prefijos permitidos (FC, GS, DC, DS, GC)."
             )
 
-        # 3. Eliminar columnas que no se necesitan
-        cols_a_borrar = ["CHEQ.NO", "DETALLE", "ELABORO", "SUC.PTO","CCOSTO","SCCOSTO","REF1","REF2","REF3","REF4","No. AUTORIZACION(DATAFONO)"]
+        # --- NUEVO: Ignorar por completo los registros anulados ---
+        if "DETALLE" in df_calc.columns:
+            mask_anulado = df_calc["DETALLE"].astype(str).str.contains("ANULADO", case=False, na=False)
+            df_calc = df_calc[~mask_anulado].copy()
+
+        # 3. Eliminar columnas que no se necesitan (SE ELIMINÓ 'DETALLE' DE LA LISTA)
+        cols_a_borrar = ["CHEQ.NO", "ELABORO", "SUC.PTO","CCOSTO","SCCOSTO","REF1","REF2","REF3","REF4","No. AUTORIZACION(DATAFONO)"]
         df_calc.drop(columns=[c for c in cols_a_borrar if c in df_calc.columns], inplace=True, errors='ignore')
 
         # 4. Consolidar AÑO, MES, DIA en "Fecha" (Ej: Ago-23-2026)
@@ -149,6 +154,25 @@ class TransformadorMovimientos:
         cols_sistema = ["CUENTA", "NOM. CUENTA", "CUENTA_CONCAT", "DEBITO", "CREDITO", "VALOR_NETO"]
         cols_descriptivas = [c for c in df_calc.columns if c not in claves_agrupacion and c not in cols_sistema]
 
+        # --- NUEVO: Selección de DETALLE evaluando la prioridad de la cuenta ---
+        df_detalle_elegido = None
+        if "DETALLE" in cols_descriptivas:
+            cols_descriptivas.remove("DETALLE") # Evitamos que el `.first()` genérico tome cualquiera
+            
+            df_det_temp = df_calc[claves_agrupacion + ["CUENTA", "DETALLE"]].copy()
+            prefijos_detalle = ('6', '5', '7', '15')
+            
+            # Asignamos prioridad 1 a las cuentas solicitadas, prioridad 2 a las demás
+            df_det_temp["Prioridad"] = df_det_temp["CUENTA"].astype(str).str.strip().apply(
+                lambda x: 1 if x.startswith(prefijos_detalle) else 2
+            )
+            
+            # Al ordenar, los movimientos con "Prioridad 1" quedan arriba en su grupo
+            df_det_temp.sort_values(by=claves_agrupacion + ["Prioridad"], inplace=True)
+            
+            # Al eliminar duplicados, siempre conservaremos el "DETALLE" del movimiento prioritario
+            df_detalle_elegido = df_det_temp.drop_duplicates(subset=claves_agrupacion, keep='first')[claves_agrupacion + ["DETALLE"]]
+
         # 8. Unificar importes (Suma) pivotando ÚNICAMENTE por la llave principal
         df_pivot = pd.pivot_table(
             df_calc,
@@ -166,10 +190,15 @@ class TransformadorMovimientos:
             df_final = pd.merge(df_pivot, df_desc, on=claves_agrupacion, how="left")
         else:
             df_final = df_pivot
+            
+        # --- NUEVO: Fusionar el DETALLE elegido y reincorporarlo ---
+        if df_detalle_elegido is not None:
+            df_final = pd.merge(df_final, df_detalle_elegido, on=claves_agrupacion, how="left")
+            cols_descriptivas.append("DETALLE")
 
-# 10. Ordenar columnas (Descriptivas a la izquierda, Cuentas monetarias reordenadas a la derecha)
-        # 10.1 Definir el orden fijo de las columnas descriptivas
-        orden_ideal = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DOCRELA", "NIT"]
+        # 10. Ordenar columnas (Descriptivas a la izquierda, Cuentas monetarias reordenadas a la derecha)
+        # 10.1 Definir el orden fijo de las columnas descriptivas (Se añadió DETALLE)
+        orden_ideal = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DOCRELA", "NIT", "DETALLE"]
         
         # Recolectar las columnas descriptivas que existen en df_final y mantener el orden ideal
         cols_indice_ordenadas = [c for c in orden_ideal if c in df_final.columns]

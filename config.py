@@ -22,14 +22,14 @@ SHEET_LABELS = {
     "contabilidad": "Hoja Contabilidad",
     "terceros": "Hoja Terceros",
     "aud_comp": "Hoja Auditoría Comprobantes (AUD-COMP)",
-    "autorretenedores": "Hoja Autorretenedores (opcional)",
+    #"autorretenedores": "Hoja Autorretenedores (opcional)",
     "Aud_dc": "Hoja Auditoría de Devoluciones (opcional)"
 }
 
 ORDEN_AUDITORIA = ["Tipo	Número", "Num.Ext", "Fecha", "Nit/C.C.", "Tercero","BASE","IVA", "Detalle"]
-SHEET_ORDER = ["principal", "contabilidad", "terceros", "aud_comp", "autorretenedores", "Aud_dc"]
+SHEET_ORDER = ["principal", "contabilidad", "terceros", "aud_comp", "Aud_dc"]
 REQUIRED_SHEETS = ["principal", "contabilidad", "terceros", "aud_comp"]
-OPTIONAL_SHEETS = ["autorretenedores","contabilidad","terceros","aud","Aud_dc"]
+OPTIONAL_SHEETS = ["contabilidad","terceros","aud","Aud_dc"]
 
 ORDEN = ['Tipo de documento', 'CUFE/CUDE', 'Folio', 'Prefijo', 'Num.Ext', 'Divisa', 'Forma de Pago',
          'Medio de Pago', 'Fecha Emisión', 'Fecha Recepción', 'NIT Emisor', 'Nombre Emisor',

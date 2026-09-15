@@ -1,4 +1,4 @@
 # version.py
 """Módulo para almacenar el número de versión global del programa."""
 
-__version__ = "2.0.0"
+__version__ = "2.1.2"

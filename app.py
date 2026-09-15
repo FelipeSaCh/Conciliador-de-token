@@ -9,6 +9,7 @@ import pandas as pd
 from informes_iva import GeneradorInformeIVA
 import tempfile
 from PIL import Image, ImageTk
+import ttkbootstrap as ttkb
 
 from config import (
     APP_NAME,
@@ -31,6 +32,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.styles import Alignment
 from pivotar_movimientos import TransformadorMovimientos
+from manager_autorretenedores import GestorAutorretenedores
 
 
 PALETTE = {
@@ -495,6 +497,7 @@ class ConciliadorApp(tk.Tk):
         self.tab_pivote_movimientos = ttk.Frame(self.page_container, style="TFrame")
         self.tab_preview = ttk.Frame(self.page_container, style="TFrame")
         self.tab_ejecucion = ttk.Frame(self.page_container, style="TFrame")
+        self.tab_autorretenedores = ttk.Frame(self.page_container, style="TFrame")
 
         self.pages = {
             "config": self.tab_config,
@@ -502,6 +505,7 @@ class ConciliadorApp(tk.Tk):
             "iva": self.tab_reportes_iva,
             "pivote": self.tab_pivote_movimientos,
             "preview": self.tab_preview,
+            "autorretenedores": self.tab_autorretenedores,
             "exec": self.tab_ejecucion
         }
         
@@ -511,6 +515,7 @@ class ConciliadorApp(tk.Tk):
         self._build_tab_pivotar()
         self._build_tab_preview()
         self._build_tab_ejecucion()
+        self._build_tab_autorretenedores()
 
         self._build_barra_estado()
         self.show_page("config")
@@ -548,11 +553,13 @@ class ConciliadorApp(tk.Tk):
         self.nav_buttons = {}
         
         self._add_nav_button("token", "🧾  Formatear Token", self.show_page)
+        self._add_nav_button("autorretenedores", "👥  Autorretenedores", self.show_page)
         self._add_nav_button("config", "⚙  Config. Auditoría", self.show_page)
         self._add_nav_button("iva", "📊  Reportes IVA", self.show_page)
         self._add_nav_button("pivote", "⇆  Movimientos", self.show_page)
         self._add_nav_button("preview", "👁  Vista Previa", self.show_page)
         self._add_nav_button("exec", "▶  Ejecución y Logs", self.show_page)
+        
     def _add_nav_button(self, page_id, text, command):
         btn = tk.Button(
             self.sidebar, text=text, bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"], 
@@ -624,8 +631,186 @@ class ConciliadorApp(tk.Tk):
         btn.configure(
             state="normal" if enabled else "disabled",
             bg=PALETTE["primary"] if enabled else "#9CA3AF",
-        )
+        )    # -------------------------------------------------------------
+    def _build_tab_autorretenedores(self):
+        wrapper = ttk.Frame(self.tab_autorretenedores, padding=(0, 0, 0, 0), style="TFrame")
+        wrapper.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrapper, text="Listado de Autorretenedores", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
+        # ---- Panel Agregar ----
+        card_agregar = self._card(wrapper, fill=tk.X, pady=(0, 20))
+        ttk.Label(card_agregar, text="Adicionar Autorretenedor", style="CardHeader.TLabel").pack(anchor="w")
+
+        form_frame = ttk.Frame(card_agregar, style="Card.TFrame")
+        form_frame.pack(fill=tk.X, pady=(12, 0))
+
+        ttk.Label(form_frame, text="NIT:", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.nit_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.nit_var, width=20).pack(side=tk.LEFT, padx=(0, 20))
+
+        ttk.Label(form_frame, text="Nombre/Razón Social:", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.nombre_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.nombre_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
+
+        ttk.Label(form_frame, text="Comentario:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.comentario_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.comentario_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
+
+        ttk.Label(form_frame, text="Resolucion:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.resolucion_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.resolucion_var, width=40).pack(side=tk.LEFT, padx=(0, 20))
+
+        ttk.label(form_frame, text="Fecha Resolucion:", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.fecha_resolucion_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self.fecha_resolucion_var, width=20).pack(side=tk.LEFT, padx=(0, 20))
+
+
+
+        btn_agregar = self._btn_primary(form_frame, "➕ Agregar", self._on_agregar_autorretenedor)
+        btn_agregar.pack(side=tk.LEFT)
+
+# ---- Panel Listado ----
+        card_lista = self._card(wrapper, fill=tk.BOTH, expand=True)
+        ttk.Label(card_lista, text="Autorretenedores Registrados", style="CardHeader.TLabel").pack(anchor="w")
+
+        # NUEVO: Barra de búsqueda conectada al filtro
+        search_frame = ttk.Frame(card_lista, style="Card.TFrame")
+        search_frame.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(search_frame, text="🔍 Buscar:", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 10))
+        self.search_auto_var = tk.StringVar()
+        self.search_auto_var.trace_add("write", self._filtrar_autorretenedores)
+        ttk.Entry(search_frame, textvariable=self.search_auto_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tree_frame = ttk.Frame(card_lista, style="Card.TFrame")
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 12))
+
+        # 👇 Treeview SIN columnas todavía; se configuran en _cargar_lista_autorretenedores
+        self.tree_autorretenedores = ttk.Treeview(tree_frame, show="headings")
+        scroll_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree_autorretenedores.yview)
+        self.tree_autorretenedores.configure(yscrollcommand=scroll_y.set)
+
+        scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_autorretenedores.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # ---- Botones inferiores ----
+        fila_botones = ttk.Frame(card_lista, style="Card.TFrame")
+        fila_botones.pack(fill=tk.X)
+
+
+        btn_exportar = ttk.Button(
+            fila_botones, text="📄 Exportar a Excel",
+            style="Secondary.TButton", command=self._on_exportar_autorretenedores, cursor="hand2"
+        )
+        btn_exportar.pack(side=tk.RIGHT)
+
+        # 👇 Carga inicial
+        self._cargar_lista_autorretenedores()
+
+    def _cargar_lista_autorretenedores(self, filtro=""):
+        """Carga los datos del JSON y usa sus claves como encabezados del Treeview."""
+        # Limpiar
+        for row in self.tree_autorretenedores.get_children():
+            self.tree_autorretenedores.delete(row)
+
+        try:
+            datos = GestorAutorretenedores.obtener_todos()
+            columnas = GestorAutorretenedores.obtener_columnas()
+        except FileNotFoundError as e:
+            logger.error(f"JSON de autorretenedores no encontrado: {e}")
+            messagebox.showerror(
+                "Archivo faltante",
+                f"No se encontró 'autorretenedores.json'.\n\nSe esperaba en:\n"
+                f"{GestorAutorretenedores.ARCHIVO_DATOS}"
+            )
+            return
+        except ValueError as e:
+            logger.error(f"JSON corrupto: {e}")
+            messagebox.showerror("Archivo inválido", str(e))
+            return
+
+        # 👇 Reconfigurar columnas del Treeview según las claves del JSON
+        self.tree_autorretenedores["columns"] = columnas
+        for col in columnas:
+            self.tree_autorretenedores.heading(col, text=col)
+            # Ancho: NIT más angosto, nombre más ancho
+            ancho = 150 if col.lower() in ("nit", "n.i.t", "identificacion") else 400
+            self.tree_autorretenedores.column(col, width=ancho, anchor="w")
+
+        # 👇 Insertar filas aplicando el filtro si existe
+        for d in datos:
+            valores = tuple(str(d.get(col, "")) for col in columnas)
+            # Si hay un texto de búsqueda, ignoramos los que no coincidan
+            if filtro and not any(filtro in v.lower() for v in valores):
+                continue
+                
+            self.tree_autorretenedores.insert("", tk.END, values=valores)
+
+    def _filtrar_autorretenedores(self, *args):
+        """Evento de rastreo cada vez que el usuario escribe en la barra de búsqueda"""
+        termino = self.search_auto_var.get().strip().lower()
+        self._cargar_lista_autorretenedores(filtro=termino)
+
+    def _on_agregar_autorretenedor(self):
+        nit = self.nit_var.get().strip()
+        nombre = self.nombre_var.get().strip()
+
+        if not nit or not nombre:
+            messagebox.showwarning("Campos incompletos", "Debe ingresar tanto el NIT como el Nombre.")
+            return
+
+        try:
+            GestorAutorretenedores.agregar(nit, nombre)
+            messagebox.showinfo("Éxito", "Autorretenedor agregado correctamente.")
+            self.nit_var.set("")
+            self.nombre_var.set("")
+            self._cargar_lista_autorretenedores()
+        except ValueError as e:
+            messagebox.showwarning("Advertencia", str(e))
+        except Exception as e:
+            logger.exception("Error al agregar autorretenedor")
+            messagebox.showerror("Error", f"Ocurrió un error inesperado:\n{e}")
+
+    def _on_eliminar_autorretenedor(self):
+        seleccion = self.tree_autorretenedores.selection()
+        if not seleccion:
+            messagebox.showwarning("Sin selección", "Selecciona un autorretenedor de la lista.")
+            return
+
+        valores = self.tree_autorretenedores.item(seleccion[0], "values")
+        nit = valores[0]
+
+        if not messagebox.askyesno("Confirmar", f"¿Eliminar el NIT '{nit}'?"):
+            return
+
+        if GestorAutorretenedores.eliminar(nit):
+            messagebox.showinfo("Eliminado", "Autorretenedor eliminado.")
+            self._cargar_lista_autorretenedores()
+        else:
+            messagebox.showwarning("No encontrado", "No se encontró el NIT en el archivo.")
+
+    def _on_exportar_autorretenedores(self):
+        try:
+            datos = GestorAutorretenedores.obtener_todos()
+            if not datos:
+                messagebox.showwarning("Sin datos", "No hay autorretenedores registrados para exportar.")
+                return
+
+            ruta_salida = filedialog.asksaveasfilename(
+                title="Exportar Autorretenedores",
+                defaultextension=".xlsx",
+                filetypes=[("Archivos de Excel", "*.xlsx")]
+            )
+            if not ruta_salida:
+                return
+
+            GestorAutorretenedores.exportar_excel(ruta_salida)
+            messagebox.showinfo("Exportación exitosa", f"Archivo exportado correctamente en:\n{ruta_salida}")
+        except Exception as e:
+            logger.exception("Error al exportar autorretenedores")
+            messagebox.showerror("Error de Exportación", f"No se pudo exportar el archivo:\n{e}")
+    # -------------------------------------------------------------
+    # FIN MÓDULO AUTORRETENEDORES
+    # -------------------------------------------------------------
     def _build_tab_config(self):
             scroll_tab = ScrollableTab(self.tab_config)
             scroll_tab.pack(fill=tk.BOTH, expand=True)
@@ -732,6 +917,32 @@ class ConciliadorApp(tk.Tk):
             chip.pack(side=tk.LEFT, padx=(0, 20))
             tk.Label(chip, text=f"  {etiqueta}  ", bg=color, fg="#FFFFFF", font=(self._font, 9, "bold")).pack(ipady=4)
 
+    @staticmethod
+    def _ordenar_columnas_por_prefijo(columnas):
+        """
+        Ordena una lista de columnas basándose en una jerarquía de prefijos predefinida.
+        Las columnas que coincidan con los prefijos se ordenarán primero por su jerarquía y 
+        luego de menor a mayor alfabéticamente/numéricamente.
+        Las columnas que no coincidan irán al final, ordenadas alfabéticamente.
+        """
+        # 1. Definir la jerarquía (El índice indica la prioridad, 0 es la más alta)
+        jerarquia_prefijos = [
+            "2408", "5315", "15", "62", "51", "52", 
+            "53", "72", "2365", "2367", "2368", "2205", "2335"
+        ]
+
+        def calcular_prioridad(col):
+            col_str = str(col).strip()
+            # Buscar si la columna empieza con alguno de los prefijos en la jerarquía
+            for idx, prefijo in enumerate(jerarquia_prefijos):
+                if col_str.startswith(prefijo):
+                    return idx
+            return 999  # Prioridad baja para los que no coinciden con ningún prefijo
+
+        # Ordenar utilizando una tupla: primero la prioridad, luego el valor como string 
+        # para garantizar el orden de "menor a mayor" dentro del mismo grupo
+        return sorted(columnas, key=lambda c: (calcular_prioridad(c), str(c).strip()))
+
     def _refrescar_columnas_aud_comp(self, *_):
         ruta = self.file_path.get()
         hoja = self.sheet_vars["aud_comp"].get().strip()
@@ -747,7 +958,8 @@ class ConciliadorApp(tk.Tk):
             return
 
         columnas = [str(col).strip() for col in df.columns if str(col).strip() and not str(col).strip().startswith("Unnamed") and str(col).strip() not in COLUMNAS_EXCLUIDAS_AUD_COMP and not df[col].dropna().empty]
-        self._poblar_checklist_columnas(columnas)
+        columnas_ordenadas = self._ordenar_columnas_por_prefijo(columnas)
+        self._poblar_checklist_columnas(columnas_ordenadas)
 
     def _refrescar_columnas_aud_dc(self, *_):
         ruta = self.file_path.get()
@@ -764,8 +976,8 @@ class ConciliadorApp(tk.Tk):
             return
 
         columnas = [str(col).strip() for col in df.columns if str(col).strip() and not str(col).strip().startswith("Unnamed") and str(col).strip() not in COLUMNAS_EXCLUIDAS_AUD_COMP and not df[col].dropna().empty]
-        self._poblar_checklist_columnas_dc(columnas)
-
+        columnas_ordenadas = self._ordenar_columnas_por_prefijo(columnas)
+        self._poblar_checklist_columnas_dc(columnas_ordenadas)
     def _poblar_checklist_columnas_dc(self, columnas):
         self.lista_columnas_aud_dc.canvas.unbind("<Configure>")
         for widget in self.lista_columnas_aud_dc.inner.winfo_children():
