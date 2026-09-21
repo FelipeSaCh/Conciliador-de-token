@@ -199,7 +199,7 @@ class TransformadorMovimientos:
             cols_descriptivas.append("DETALLE")
 
         # 10. Ordenar columnas
-        orden_ideal = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DOCRELA", "NIT", "DETALLE"]
+        orden_ideal = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DETALLE", "DOCRELA", "NIT"]
         cols_indice_ordenadas = [c for c in orden_ideal if c in df_final.columns]
         cols_indice_ordenadas += [c for c in df_final.columns if c in cols_descriptivas and c not in cols_indice_ordenadas]
         
@@ -235,12 +235,12 @@ class TransformadorMovimientos:
         self._notificar(f"Guardando resultados en la hoja '{self.HOJA_DESTINO}' del archivo original...")
         self._notificar("Aplicando estilos personalizados, bandas alternas y ajuste dinámico de celdas...")
 
-        FILL_HEADER = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+        FILL_HEADER = PatternFill(start_color="ffcc00", end_color="ffcc00", fill_type="solid")
         FILL_ROW_EVEN = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
         FILL_ROW_ODD = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
 
-        FONT_HEADER = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-        FONT_BODY = Font(name="Calibri", size=10, color="000000")
+        FONT_HEADER = Font(name="Arial", size=11, bold=True, color="000000")
+        FONT_BODY = Font(name="Arial", size=10, color="000000")
 
         BORDER_THIN = Side(border_style="thin", color="E2E8F0")
         BORDER_HEADER = Side(border_style="medium", color="0F172A")

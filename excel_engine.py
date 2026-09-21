@@ -915,7 +915,7 @@ class ConciliadorAuditoria:
                     for r in range(1, 20):
                         for c in range(1, sheet_orig.max_column + 1):
                             val = str(sheet_orig.cell(row=r, column=c).value).strip().upper()
-                            if val == 'TERCERO': col_tercero = c
+                            if val == 'DETALLE': col_tercero = c
                             elif val in ['NIT/C.C.', 'NIT']: col_nit = c
                             elif val == 'TIPO': col_tipo = c
 
