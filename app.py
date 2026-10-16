@@ -56,7 +56,12 @@ PALETTE = {
     "console_bg": "#1E293B",     
     "console_fg": "#F8FAFC",     
 }
+PREFIJOS_CATEGORIAS = {
+    "iva": ("24", "135530"),
+    "base": ("15", "51", "52", "53", "6", "7") # Puedes expandir estos seriales
+}
 
+SERIALES_EXENTOS = ("531520", "521570", "511570")
 class ScrollableTab(ttk.Frame):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, style="TFrame", **kwargs)
@@ -64,7 +69,6 @@ class ScrollableTab(ttk.Frame):
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, style="TFrame")
 
-        # Ajuste dinámico de tamaño
         self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._window, width=e.width))
@@ -73,20 +77,20 @@ class ScrollableTab(ttk.Frame):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
 
-        # Bindings para la rueda del ratón
         self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
         self.canvas.bind_all("<Button-4>", self._on_wheel, add="+")
         self.canvas.bind_all("<Button-5>", self._on_wheel, add="+")
 
     def _on_wheel(self, event):
-        # Verifica que el ratón esté sobre esta pestaña
         widget = self.winfo_containing(event.x_root, event.y_root)
         w = widget
         while w is not None and w is not self:
+            if isinstance(w, ScrollableChecklist):
+                return
             w = w.master
         if w is not self:
             return
-            
+
         if getattr(event, "num", None) == 4:
             self.canvas.yview_scroll(-3, "units")
         elif getattr(event, "num", None) == 5:
@@ -95,21 +99,41 @@ class ScrollableTab(ttk.Frame):
             self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
 
 class ScrollableChecklist(ttk.Frame):
-    def __init__(self, parent, height=None, **kwargs):
+    def __init__(self, parent, height=300, **kwargs):
         super().__init__(parent, style="Card.TFrame", **kwargs)
-        # Contenedor interno que se expandirá a tamaño completo
-        self.inner = ttk.Frame(self, style="Card.TFrame")
-        self.inner.pack(fill="both", expand=True)
-        
-        # Atributos "Dummy" (falsos) para no romper tu código en _poblar_checklist_columnas
-        self.canvas = tk.Frame(self) 
-        self.canvas.itemconfigure = lambda *args, **kwargs: None
-        self._window = None
+        self.canvas = tk.Canvas(self, bg=PALETTE["surface"], highlightthickness=0, bd=0, height=height)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
+
+        self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self._actualizar_scrollregion())
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._window, width=e.width))
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        self.canvas.bind_all("<Button-4>", self._on_wheel, add="+")
+        self.canvas.bind_all("<Button-5>", self._on_wheel, add="+")
 
     def _actualizar_scrollregion(self):
-        # Ya no hace nada, delegamos el scroll al ScrollableTab general
-        pass
+        self.canvas.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+    def _on_wheel(self, event):
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        w = widget
+        while w is not None and w is not self:
+            w = w.master
+        if w is not self:
+            return
+        if getattr(event, "num", None) == 4:
+            self.canvas.yview_scroll(-3, "units")
+        elif getattr(event, "num", None) == 5:
+            self.canvas.yview_scroll(3, "units")
+        else:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120) * 3), "units")
 
 
 class ConciliadorApp(tk.Tk):
@@ -129,6 +153,7 @@ class ConciliadorApp(tk.Tk):
         self.column_vars = {}
         self._cola_eventos = queue.Queue()
         self.hoja_iva_var = tk.StringVar()
+        self.filtro_grupo_var = tk.StringVar(value="")
         self._procesando_iva = False
         self._procesando_token=False
         self._procesando = False
@@ -861,7 +886,23 @@ class ConciliadorApp(tk.Tk):
             grid_frame.columnconfigure(1, weight=1)
 
             ttk.Label(card_hojas, text="* Campo obligatorio", style="SubheaderCard.TLabel").pack(anchor="w", pady=(14, 0))
+            card_filtro = self._card(col_izq, fill=tk.X, pady=(16, 0))
+            ttk.Label(card_filtro, text="Filtro de Documentos", style="CardHeader.TLabel").pack(anchor="w")
+            ttk.Label(card_filtro, text="Selecciona qué documentos del token procesar.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 12))
 
+            fila_filtro = ttk.Frame(card_filtro, style="Card.TFrame")
+            fila_filtro.pack(fill=tk.X)
+            ttk.Label(fila_filtro, text="Grupo a procesar  *", style="FieldLabel.TLabel").pack(side=tk.LEFT, padx=(0, 20))
+            
+            self.combo_filtro_grupo = ttk.Combobox(
+                fila_filtro, 
+                textvariable=self.filtro_grupo_var, 
+                values=["Solo Recibidos", "Solo Emitidos", "Ambos"], 
+                state="readonly", 
+                width=25, 
+                cursor="hand2"
+            )
+            self.combo_filtro_grupo.pack(side=tk.LEFT, pady=10)
             card_seriales = self._card(col_der, fill=tk.BOTH, expand=True)
             ttk.Label(card_seriales, text="Configuración de Seriales", style="CardHeader.TLabel").pack(anchor="w")
             ttk.Label(card_seriales, text="Marca a qué categoría(s) pertenece cada columna de la hoja AUD-COMP.", style="SubheaderCard.TLabel").pack(anchor="w", pady=(6, 0))
@@ -878,7 +919,7 @@ class ConciliadorApp(tk.Tk):
             self.search_aud_var.trace_add("write", self._filtrar_columnas_aud)
             ttk.Entry(fila_buscador, textvariable=self.search_aud_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-            self.lista_columnas_aud = ScrollableChecklist(card_seriales, height=330)
+            self.lista_columnas_aud = ScrollableChecklist(card_seriales, height=240)
             self.lista_columnas_aud.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
             self._poblar_checklist_columnas([])
 
@@ -898,7 +939,7 @@ class ConciliadorApp(tk.Tk):
             self.search_aud_dc_var.trace_add("write", self._filtrar_columnas_aud_dc)
             ttk.Entry(fila_buscador_dc, textvariable=self.search_aud_dc_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-            self.lista_columnas_aud_dc = ScrollableChecklist(card_seriales_dc, height=220)
+            self.lista_columnas_aud_dc = ScrollableChecklist(card_seriales_dc, height=180)
             self.lista_columnas_aud_dc.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
             self._poblar_checklist_columnas_dc([])
 
@@ -995,9 +1036,22 @@ class ConciliadorApp(tk.Tk):
                 lbl_col = tk.Label(contenido, text=col, bg=fondo_fila, fg=PALETTE["text"], font=(self._font, 10), anchor="w", width=55)
                 lbl_col.pack(side=tk.LEFT, padx=(0, 24))
 
+# Validar prefijos para marcar automáticamente en su categoría respectiva
+                col_str = str(col).strip()
+                
+                # Interceptar seriales exentos antes de la evaluación
+                es_exento = col_str.startswith(SERIALES_EXENTOS)
+
                 vars_col = {}
                 for clave_cat, color in CATEGORY_COLORS.items():
-                    var = tk.BooleanVar(value=False)
+                    # Si es exento, fuerza el valor a False para todas las categorías
+                    if es_exento:
+                        val_inicial = False
+                    else:
+                        prefijos = PREFIJOS_CATEGORIAS.get(clave_cat, ())
+                        val_inicial = col_str.startswith(prefijos) if prefijos else False
+                    
+                    var = tk.BooleanVar(value=val_inicial)
                     chip = self._crear_chip_toggle(contenido, color, var)
                     chip.pack(side=tk.LEFT, padx=(8, 0))
                     vars_col[clave_cat] = var
@@ -1073,9 +1127,22 @@ class ConciliadorApp(tk.Tk):
                 lbl_col = tk.Label(contenido, text=col, bg=fondo_fila, fg=PALETTE["text"], font=(self._font, 10), anchor="w", width=55)
                 lbl_col.pack(side=tk.LEFT, padx=(0, 24))
 
+# Validar prefijos para marcar automáticamente en su categoría respectiva
+                col_str = str(col).strip()
+                
+                # Interceptar seriales exentos antes de la evaluación
+                es_exento = col_str.startswith(SERIALES_EXENTOS)
+
                 vars_col = {}
                 for clave_cat, color in CATEGORY_COLORS.items():
-                    var = tk.BooleanVar(value=False)
+                    # Si es exento, fuerza el valor a False para todas las categorías
+                    if es_exento:
+                        val_inicial = False
+                    else:
+                        prefijos = PREFIJOS_CATEGORIAS.get(clave_cat, ())
+                        val_inicial = col_str.startswith(prefijos) if prefijos else False
+                    
+                    var = tk.BooleanVar(value=val_inicial)
                     chip = self._crear_chip_toggle(contenido, color, var)
                     chip.pack(side=tk.LEFT, padx=(8, 0))
                     vars_col[clave_cat] = var
@@ -1571,6 +1638,9 @@ class ConciliadorApp(tk.Tk):
     def _validar_entradas(self):
         if not self.file_path.get():
             raise ErrorUsuario("Primero debes seleccionar un archivo de Excel.")
+        if not self.filtro_grupo_var.get():
+            raise ErrorUsuario("Debes seleccionar qué grupo de documentos procesar (Solo Recibidos, Solo Emitidos o Ambos) en Config. Auditoría.")
+
         for clave in SHEET_ORDER:
             if clave in OPTIONAL_SHEETS: continue
             valor = self.sheet_vars[clave].get().strip()
@@ -1616,18 +1686,20 @@ class ConciliadorApp(tk.Tk):
             args=(
                 self.file_path.get(), sheet_names,
                 seriales_iva_seleccionados, seriales_base_seleccionados, seriales_base2_seleccionados,
-                seriales_iva_dc_seleccionados, seriales_base_dc_seleccionados, seriales_base2_dc_seleccionados
+                seriales_iva_dc_seleccionados, seriales_base_dc_seleccionados, seriales_base2_dc_seleccionados,
+                self.filtro_grupo_var.get() # <-- NUEVO PARÁMETRO
             ), daemon=True
         )
         hilo.start()
 
     def _ejecutar_en_hilo(self, ruta, sheet_names, seriales_iva, seriales_base, seriales_base2,
-                           seriales_iva_dc, seriales_base_dc, seriales_base2_dc):
+                           seriales_iva_dc, seriales_base_dc, seriales_base2_dc, filtro_grupo):
         conciliador = ConciliadorAuditoria(
             ruta, sheet_names, seriales_iva=seriales_iva,
             seriales_base=seriales_base, seriales_base2=seriales_base2,
             seriales_iva_dc=seriales_iva_dc, seriales_base_dc=seriales_base_dc,
             seriales_base2_dc=seriales_base2_dc,
+            filtro_grupo=filtro_grupo, # <-- PASARLO AL MOTOR
             progress_callback=self._on_progreso
         )
         try:

@@ -16,7 +16,7 @@ from acta_errores import GeneradorActaErrores
 class ConciliadorAuditoria:
     def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None,
                  seriales_base2=None, seriales_ret=None, seriales_iva_dc=None,
-                 seriales_base_dc=None, seriales_base2_dc=None, progress_callback=None):
+                 seriales_base_dc=None, seriales_base2_dc=None, filtro_grupo="Ambos", progress_callback=None):
         self.file_path = Path(file_path)
         self.sheet_names = sheet_names
         self.progress_callback = progress_callback or (lambda mensaje: None)
@@ -27,7 +27,7 @@ class ConciliadorAuditoria:
         self.seriales_iva_dc = seriales_iva_dc if seriales_iva_dc is not None else []
         self.seriales_base_dc = seriales_base_dc if seriales_base_dc is not None else []
         self.seriales_base2_dc = seriales_base2_dc if seriales_base2_dc is not None else []
-
+        self.filtro_grupo = filtro_grupo
     def _reportar(self, mensaje):
         logger.info(mensaje)
         self.progress_callback(mensaje)
@@ -45,6 +45,15 @@ class ConciliadorAuditoria:
         cols = df.columns.astype(str).str.replace(r'[\r\n\t]', '', regex=True).str.strip()
         df.columns = cols.str.upper() if mayus else cols
         return df
+
+    @staticmethod
+    def _normalizar_nit(valor):
+        s = str(valor).strip()
+        if s.lower() in ('', 'nan', 'none', 'nat'):
+            return ''
+        s = re.sub(r'^(\d+)\.0+$', r'\1', s)
+        s = s.split('-')[0]
+        return re.sub(r'\D', '', s)
     
     @staticmethod
     def _shift_table_ref(ref, pivot_col, delta):
@@ -217,12 +226,15 @@ class ConciliadorAuditoria:
         try:
             datos_auto = GestorAutorretenedores.obtener_todos()
             if datos_auto:
+                def _g(d, *keys):
+                    for k in keys:
+                        if k in d and str(d[k]).strip().lower() not in ('', 'nan', 'none'):
+                            return str(d[k]).strip()
+                    return ''
                 registros = [
                     {
-                        'NIT': str(d.get('nit', d.get('NIT', ''))).strip(),
-                        'COMENTARIO': str(
-                            d.get('COMENT/COMENTARIO', d.get('nombre', d.get('NOMBRE', '')))
-                        ).strip(),
+                        'NIT': _g(d, 'nit', 'NIT', 'Nit'),
+                        'COMENTARIO': _g(d, 'COMENT/COMENTARIO', 'comentario', 'COMENTARIO', 'nombre', 'NOMBRE'),
                     }
                     for d in datos_auto
                 ]
@@ -253,33 +265,47 @@ class ConciliadorAuditoria:
                 df_aud_dc = None
         
 # --- 1. IDENTIFICACIÓN PRIORITARIA DE PERSONALES ---
-        # Primero que todo, preparamos la columna Novedad
         df_full['Novedad'] = ''
 
         # Marcamos los personales INMEDIATAMENTE para blindarlos
         es_personales_full = df_full['CONCEPTO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
-        df_full.loc[es_personales_full, 'Novedad'] = 'DIAN: ' + df_full.loc[es_personales_full, 'CONCEPTO'].astype(str)
-        self._reportar(f"Se identificaron y protegieron {es_personales_full.sum()} registros Personales primero.")
+        mask_personales_sin_detalle = es_personales_full & (df_full['Novedad'] == '')
+        df_full.loc[mask_personales_sin_detalle, 'Novedad'] = 'DIAN - Gasto Personal: ' + df_full.loc[mask_personales_sin_detalle, 'CONCEPTO'].astype(str)
 
 # --- 2. EXCLUSIÓN DE EMITIDOS Y APPLICATION RESPONSE ---
         col_grupo = next((c for c in df_full.columns if str(c).strip().lower() == 'grupo'), None)
         col_doc = next((c for c in df_full.columns if str(c).strip().lower() == 'tipo de documento'), None)
 
         if col_grupo:
-            # Detectamos todos los "emitidos"
             mask_emi = df_full[col_grupo].astype(str).str.contains('emitido', case=False, na=False)
-            
-            if col_doc:
-                # Detectamos cuáles son Documento Soporte
-                mask_soporte = df_full[col_doc].astype(str).str.contains('soporte', case=False, na=False)
-                # Excluimos los emitidos ÚNICAMENTE si NO son Documentos Soporte
-                mask_a_eliminar = mask_emi & ~mask_soporte
-            else:
+            mask_rec = df_full[col_grupo].astype(str).str.contains('recibido', case=False, na=False)
+            mask_a_eliminar = pd.Series(False, index=df_full.index)
+
+            if self.filtro_grupo == "Solo Recibidos":
+                # Eliminamos los emitidos. Mantenemos la lógica de respetar los Documentos Soporte.
                 mask_a_eliminar = mask_emi
-                
-            # Eliminamos los emitidos (que no son soporte) SOLO si no fueron marcados previamente como personales
+                if col_doc:
+                    mask_soporte = df_full[col_doc].astype(str).str.contains('soporte', case=False, na=False)
+                    mask_a_eliminar = mask_emi & ~mask_soporte
+
+            elif self.filtro_grupo == "Solo Emitidos":
+                # Eliminamos todo lo que diga Recibido (o lo que no sea explícitamente emitido)
+                mask_a_eliminar = mask_rec
+
+            elif self.filtro_grupo == "Ambos":
+                # No eliminamos nada por pertenecer a un grupo
+                pass
+
+            # Ejecutamos la eliminación siempre respetando las Novedades previas (Personales)
             df_full = df_full[~(mask_a_eliminar & (df_full['Novedad'] == ''))]
 
+        if col_doc:
+            mask_app_response = df_full[col_doc].astype(str).str.contains('Application response', case=False, na=False)
+            # Eliminamos application response SOLO si no fueron marcados como personales
+            df_full = df_full[~(mask_app_response & (df_full['Novedad'] == ''))]
+
+        # Reseteamos el índice tras borrar filas
+        df_full = df_full.reset_index(drop=True)
         if col_doc:
             mask_app_response = df_full[col_doc].astype(str).str.contains('Application response', case=False, na=False)
             # Eliminamos application response SOLO si no fueron marcados como personales
@@ -731,9 +757,7 @@ class ConciliadorAuditoria:
                 df_unificado, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, patron_regex, mapa_otros_imp # <--- NUEVO
             )
 
-        df_unificado['NIT_Emisor_Clean'] = (
-            df_unificado['NIT Emisor'].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-        )
+        df_unificado['NIT_Emisor_Clean'] = df_unificado['NIT Emisor'].map(ConciliadorAuditoria._normalizar_nit)
         df_unificado['NIT_Emisor_Group'] = df_unificado.groupby('Num.Ext_Clean')['NIT_Emisor_Clean'].transform('max')
 
         if not df_autoretenedores.empty:
@@ -742,9 +766,8 @@ class ConciliadorAuditoria:
 
             if col_nit_auto and col_coment_auto:
                 df_auto_clean = df_autoretenedores[[col_nit_auto, col_coment_auto]].copy()
-                df_auto_clean['NIT_Clean'] = (
-                    df_auto_clean[col_nit_auto].fillna('').astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                )
+                df_auto_clean['NIT_Clean'] = df_auto_clean[col_nit_auto].map(ConciliadorAuditoria._normalizar_nit)
+                df_auto_clean = df_auto_clean[df_auto_clean['NIT_Clean'] != '']
                 df_auto_clean = df_auto_clean.drop_duplicates(subset=['NIT_Clean'])
 
                 df_unificado = df_unificado.merge(
@@ -810,17 +833,47 @@ class ConciliadorAuditoria:
 
         df_unificado = df_unificado.drop(columns=['Temp_Base_Num', 'Temp_IVA_Num', 'Temp_Total_Suma'])
 
-        # --- REVISIÓN DE TERCERO (NIT) EN PAREJAS ---
+# --- REVISIÓN DE TERCERO (NIT) EN PAREJAS ---
         df_unificado['Diff_NIT'] = False
-        nit_nunique = df_unificado[mask_pairs].groupby('Num.Ext_Clean')['NIT_Emisor_Clean'].transform('nunique')
-        mask_diff_nit = mask_pairs & (nit_nunique > 1)
         
+        # Extraer NIT Receptor limpio si existe
+        if 'NIT Receptor' in df_unificado.columns:
+            df_unificado['NIT_Receptor_Clean'] = df_unificado['NIT Receptor'].map(ConciliadorAuditoria._normalizar_nit)
+        else:
+            df_unificado['NIT_Receptor_Clean'] = ''
+
+        # Buscar diferencias de NIT validando tanto Emisor como Receptor (útil para Emitidos)
+        for num_ext, group in df_unificado[mask_pairs].groupby('Num.Ext_Clean'):
+            idx_dian = group[group['Prioridad_Fila'] == 1].index
+            idx_cont = group[group['Prioridad_Fila'].isin([2, 3])].index
+            
+            if len(idx_dian) > 0 and len(idx_cont) > 0:
+                for c_idx in idx_cont:
+                    nit_cont = group.loc[c_idx, 'NIT_Emisor_Clean']
+                    match_found = False
+                    for d_idx in idx_dian:
+                        nit_emisor_d = group.loc[d_idx, 'NIT_Emisor_Clean']
+                        nit_receptor_d = group.loc[d_idx, 'NIT_Receptor_Clean']
+                        
+                        # Si coincide con el Emisor o el Receptor de la DIAN, es una pareja válida
+                        if nit_cont == nit_emisor_d or (nit_receptor_d != '' and nit_cont == nit_receptor_d):
+                            match_found = True
+                            break
+                            
+                    if not match_found:
+                        df_unificado.loc[c_idx, 'Diff_NIT'] = True
+                        for d_idx in idx_dian:
+                            df_unificado.loc[d_idx, 'Diff_NIT'] = True
+
+        mask_diff_nit = df_unificado['Diff_NIT']
         df_unificado.loc[mask_diff_nit, 'Novedad'] = np.where(
             df_unificado.loc[mask_diff_nit, 'Novedad'] == '',
             'No coincide tercero',
             df_unificado.loc[mask_diff_nit, 'Novedad'] + ' / No coincide tercero'
         )
-        df_unificado['Diff_NIT'] = mask_diff_nit
+        
+        # Limpiar columna temporal
+        df_unificado = df_unificado.drop(columns=['NIT_Receptor_Clean'], errors='ignore')
 
         # --- NUEVO: REVISIÓN DE EMPAREJAMIENTO FLEXIBLE (DIF. FORMATO) ---
         mask_fue_fuzzy = df_unificado['Fue_Fuzzy_Match'] == True
@@ -899,9 +952,9 @@ class ConciliadorAuditoria:
 
                 if col_nit_auto and col_coment_auto:
                     for _, r in df_autoretenedores.iterrows():
-                        nit_str = str(r[col_nit_auto]).replace('.0', '').strip()
-                        if nit_str and str(nit_str).lower() != 'nan':
-                            dict_auto[nit_str] = str(r[col_coment_auto]).strip()
+                        nit_str = ConciliadorAuditoria._normalizar_nit(r[col_nit_auto])
+                        if nit_str:
+                            dict_auto[nit_str] = str(r[col_coment_auto]).strip() or 'AUTORRETENEDOR'
 
                 # --- 2. FUNCIÓN INTERNA PARA INYECTAR COLUMNAS EN CUALQUIER HOJA ---
                 def inyectar_hoja(sheet_name, df_res):
@@ -910,32 +963,48 @@ class ConciliadorAuditoria:
                     
                     sheet_orig = wb[sheet_name]
                     header_row = 0
-                    col_tercero = col_nit = col_tipo = 0
 
+                    # 1. ENCONTRAR PRIMERO LA FILA DEL ENCABEZADO
                     for r in range(1, 20):
                         for c in range(1, sheet_orig.max_column + 1):
                             val = str(sheet_orig.cell(row=r, column=c).value).strip().upper()
-                            if val == 'DETALLE': col_tercero = c
-                            elif val in ['NIT/C.C.', 'NIT']: col_nit = c
-                            elif val == 'TIPO': col_tipo = c
-
-                        if col_tercero > 0:
-                            header_row = r
+                            if 'DETALLE' in val:
+                                header_row = r
+                                break
+                        if header_row > 0:
                             break
 
-                    if header_row > 0 and col_tercero > 0:
-                        # Limpiar si ya fueron inyectadas previamente
+                    if header_row == 0:
+                        return
+
+                    # 2. LIMPIAR COLUMNAS INYECTADAS PREVIAMENTE (ANTES DE BUSCAR LOS ÍNDICES FINALES)
+                    col_tercero_temp = 0
+                    for c in range(1, sheet_orig.max_column + 1):
+                        if str(sheet_orig.cell(row=header_row, column=c).value).strip().upper() == 'DETALLE':
+                            col_tercero_temp = c
+                            break
+
+                    if col_tercero_temp > 0:
                         num_injected_found = 0
                         for i in range(1, 6):
-                            val = str(sheet_orig.cell(row=header_row, column=col_tercero + i).value).strip().upper()
+                            val = str(sheet_orig.cell(row=header_row, column=col_tercero_temp + i).value).strip().upper()
                             if val in ['AUTORRETENCION', 'BASE', 'BASE_2', 'IVA', 'OTROS IMPUESTOS']:
                                 num_injected_found += 1
                             else:
                                 break
                         
                         if num_injected_found > 0:
-                            sheet_orig.delete_cols(col_tercero + 1, amount=num_injected_found)
+                            sheet_orig.delete_cols(col_tercero_temp + 1, amount=num_injected_found)
 
+                    # 3. BUSCAR LOS ÍNDICES REALES Y ACTUALIZADOS TRAS LA LIMPIEZA
+                    col_tercero = col_nit = col_tipo = 0
+                    for c in range(1, sheet_orig.max_column + 1):
+                        val = str(sheet_orig.cell(row=header_row, column=c).value).strip().upper()
+                        if 'DETALLE' in val: col_tercero = c
+                        elif 'NIT' in val or 'C.C' in val: col_nit = c
+                        elif 'TIPO' in val: col_tipo = c
+
+                    if header_row > 0 and col_tercero > 0:
                         row_data_list = []
                         df_res_records = df_res.to_dict('records')
                         max_row_orig = sheet_orig.max_row
@@ -945,7 +1014,9 @@ class ConciliadorAuditoria:
                             cell_values = [sheet_orig.cell(row=excel_row_idx, column=c).value for c in range(1, max_col_orig + 1)]
                             calc_data = df_res_records[idx] if idx < len(df_res_records) else {'BASE': 0, 'BASE_2': 0, 'IVA': 0, 'OTROS IMPUESTOS': 0}
 
-                            nit_val = str(cell_values[col_nit - 1]).replace('.0', '').strip() if col_nit > 0 else ''
+                            # Limpieza del NIT para el cruce
+                            nit_val_raw = str(cell_values[col_nit - 1]) if col_nit > 0 else ''
+                            nit_val = re.sub(r'\D', '', nit_val_raw)
                             comentario_auto = dict_auto.get(nit_val, '')
 
                             tipo_val = str(cell_values[col_tipo - 1]).strip().upper() if col_tipo > 0 else ''
@@ -1165,12 +1236,14 @@ class ConciliadorAuditoria:
                         motivo_str = str(motivo).strip()
                         if 'DUPLICADO' in motivo_str:
                             color_hex = DUPLICADO_FILL_COLOR
-                        elif 'Gasto Personal' in motivo_str:
+                        elif 'PERSONAL' in motivo_str.upper():
                             color_hex = 'FFCCFF'
                         elif 'No coincide tercero' in motivo_str:
                             color_hex = color_llenado_hex
                         else:
                             color_hex = COLOR_MOTIVOS.get(motivo_str, 'FFC7CE') 
+                        
+                        # Esta es la variable que estaba causando el error si quedaba por fuera
                         fill_base = PatternFill(start_color=color_hex, end_color=color_hex, fill_type="solid")
                     else:
                         fill_base = current_fill_vacio if es_vacio else current_fill_llenado

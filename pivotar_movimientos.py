@@ -229,6 +229,32 @@ class TransformadorMovimientos:
         cols_cuentas_reordenadas = cuentas_priorizadas + cuentas_restantes
         df_final = df_final[cols_indice_ordenadas + cols_cuentas_reordenadas]
 
+        # --- NUEVA LÓGICA DE ORDENAMIENTO (GC, GS, CG al final, agrupados por Tercero) ---
+        if "Tipo" in df_final.columns and "Tercero" in df_final.columns:
+            # 1. Identificar registros especiales
+            mask_especiales = df_final["Tipo"].astype(str).str.strip().str.upper().str.startswith(('GC', 'GS', 'CG'))
+            
+            # 2. Separar los DataFrames
+            df_normales = df_final[~mask_especiales].copy()
+            df_especiales = df_final[mask_especiales].copy()
+            
+            # 3. Ordenar el grupo especial por Tercero
+            df_especiales_ordenado = df_especiales.sort_values(by="Tercero")
+            
+            # 4. Crear el DataFrame con el orden teórico esperado
+            df_teorico = pd.concat([df_normales, df_especiales_ordenado], ignore_index=True)
+            
+            # 5. Verificar si el DataFrame actual ya coincide con el orden teórico
+            df_actual_reset = df_final.reset_index(drop=True)
+            df_teorico_reset = df_teorico.reset_index(drop=True)
+            
+            if df_actual_reset.equals(df_teorico_reset):
+                self._notificar("Verificación: Los registros ya se encuentran ordenados correctamente.")
+            else:
+                self._notificar("Reordenando filas: Enviando GC, GS, CG al final y agrupando por Tercero...")
+                df_final = df_teorico_reset
+        # ----------------------------------------------------------------------------------
+
         return df_final, cols_indice_ordenadas
 
     def _guardar_con_formato(self, df_final: pd.DataFrame, cols_indice: List[str]) -> None:
