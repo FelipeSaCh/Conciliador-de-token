@@ -10,7 +10,7 @@ from informes_iva import GeneradorInformeIVA
 import tempfile
 from PIL import Image, ImageTk
 import ttkbootstrap as ttkb
-
+from dialog_screen import seleccionar_tipos_documento
 from config import (
     APP_NAME,
     APP_VERSION,
@@ -245,6 +245,19 @@ class ConciliadorApp(tk.Tk):
             messagebox.showwarning("Hoja requerida", "Debes seleccionar la hoja de token principal.")
             return
 
+        try:
+            tipos, preseleccionados = GeneradorInformeIVA.obtener_tipos_documento(self.file_path.get(), hoja)
+        except ErrorUsuario as e:
+            messagebox.showwarning("Tipos de documento", str(e))
+            return
+        except ErrorSistema as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        tipos_seleccionados = seleccionar_tipos_documento(self, tipos, preseleccionados)
+        if not tipos_seleccionados:
+            return
+
         self._procesando_iva = True
         self._set_btn_enabled(self.btn_generar_iva, False)
         self.btn_exportar_pdf.configure(state="disabled")
@@ -252,7 +265,9 @@ class ConciliadorApp(tk.Tk):
         self.lbl_estado_iva.configure(text="Generando informe...")
 
         self._generador_iva = GeneradorInformeIVA(
-            self.file_path.get(), hoja, progress_callback=self._on_progreso_iva
+            self.file_path.get(), hoja,
+            progress_callback=self._on_progreso_iva,
+            tipos_documento=tipos_seleccionados,
         )
 
         hilo = threading.Thread(
@@ -261,7 +276,7 @@ class ConciliadorApp(tk.Tk):
             daemon=True
         )
         hilo.start()
-
+        
     def _generar_informe_iva_en_hilo(self, generador):
         try:
             resumen = generador.generar()

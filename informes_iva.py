@@ -1,3 +1,5 @@
+import unicodedata
+
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Border, Font, PatternFill, Side
@@ -47,11 +49,31 @@ MESES_ESPANOL = {
     12: "Diciembre",
 }
 
+
+def _normalizar(texto):
+    return (
+        unicodedata.normalize("NFKD", str(texto))
+        .encode("ascii", "ignore")
+        .decode()
+        .strip()
+        .lower()
+    )
+
+
+def _es_nota_credito(tipo_doc):
+    t = _normalizar(tipo_doc)
+    return "credito" in t or "ajuste" in t
+
+
+TIPOS_DOC_POR_DEFECTO_NORM = {_normalizar(t) for t in TIPOS_DOC_VALIDOS}
+
+
 class GeneradorInformeIVA:
-    def __init__(self, ruta_archivo, hoja_token, progress_callback=None):
+    def __init__(self, ruta_archivo, hoja_token, progress_callback=None, tipos_documento=None):
         self.ruta_archivo = ruta_archivo
         self.hoja_token = hoja_token
         self.progress_callback = progress_callback or (lambda msg: None)
+        self.tipos_documento = set(tipos_documento) if tipos_documento else None
         self.df_filtrado = None
         self.resumen = None
         self.periodo_texto = ""
@@ -59,6 +81,25 @@ class GeneradorInformeIVA:
     def _log(self, mensaje):
         logger.info(mensaje)
         self.progress_callback(mensaje)
+
+    @classmethod
+    def obtener_tipos_documento(cls, ruta_archivo, hoja_token):
+        df = cls._cargar_hoja(ruta_archivo, hoja_token)
+        if COLUMNA_TIPO_DOC not in df.columns:
+            raise ErrorUsuario(
+                f"La hoja '{hoja_token}' no contiene la columna requerida '{COLUMNA_TIPO_DOC}'."
+            )
+        tipos = sorted(
+            {
+                str(t).strip()
+                for t in df[COLUMNA_TIPO_DOC].dropna()
+                if str(t).strip() and str(t).strip().lower() != "nan"
+            }
+        )
+        if not tipos:
+            raise ErrorUsuario("No se encontraron tipos de documento en la hoja seleccionada.")
+        preseleccionados = [t for t in tipos if _normalizar(t) in TIPOS_DOC_POR_DEFECTO_NORM]
+        return tipos, preseleccionados
 
     def generar(self):
         self._log(f"Leyendo hoja de token: {self.hoja_token}")
@@ -76,8 +117,11 @@ class GeneradorInformeIVA:
             pd.to_numeric(df[COLUMNA_IVA], errors="coerce").fillna(0)
         )
 
+        tipos_incluidos = self.tipos_documento or TIPOS_DOC_VALIDOS
+        self._log(f"Tipos de documento incluidos: {', '.join(sorted(tipos_incluidos))}")
+
         condicion_filtro = (
-            df[COLUMNA_TIPO_DOC].isin(TIPOS_DOC_VALIDOS)
+            df[COLUMNA_TIPO_DOC].isin(tipos_incluidos)
             & df[COLUMNA_GRUPO].isin(GRUPOS_VALIDOS)
         )
 
@@ -168,12 +212,12 @@ class GeneradorInformeIVA:
     @staticmethod
     def _calcular_signo(fila):
         grupo = fila[COLUMNA_GRUPO]
-        tipo_doc = fila[COLUMNA_TIPO_DOC]
+        es_nota = _es_nota_credito(fila[COLUMNA_TIPO_DOC])
 
         if grupo == "Emitido":
-            return 1 if tipo_doc in ("Factura electrónica", "Nota debito") else -1
+            return -1 if es_nota else 1
         if grupo == "Recibido":
-            return -1 if tipo_doc in ("Factura electrónica", "Nota debito") else 1
+            return 1 if es_nota else -1
         return 0
 
     @staticmethod
@@ -457,10 +501,9 @@ class GeneradorInformeIVA:
 
         for grupo in ("Emitido", "Recibido"):
             df_grupo = df[df[COLUMNA_GRUPO] == grupo]
-            facturas = df_grupo[
-                df_grupo[COLUMNA_TIPO_DOC].isin(["Factura electrónica", "Nota debito"])
-            ]
-            notas = df_grupo[df_grupo[COLUMNA_TIPO_DOC] == "Nota credito"]
+            mascara_notas = df_grupo[COLUMNA_TIPO_DOC].apply(_es_nota_credito)
+            facturas = df_grupo[~mascara_notas]
+            notas = df_grupo[mascara_notas]
 
             resumen["grupos"][grupo] = {
                 "facturas_cantidad": len(facturas),
