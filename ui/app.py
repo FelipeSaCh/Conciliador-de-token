@@ -2,7 +2,7 @@ import gc
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-
+import actualizador
 from core.config import APP_NAME, APP_VERSION, DEFAULT_SHEET_NAMES
 from core.errors import logger
 from shared.excel_io import hojas_de
@@ -53,7 +53,8 @@ class ConciliadorApp(tk.Tk):
         self.paginas = {}
         self.nav_buttons = {}
         self.current_page = None
-
+        self.protocol("WM_DELETE_WINDOW", self._cerrar)
+        actualizador.programar(self, self._cerrar)
         self._construir()
 
     # ---------------------------------------------------------------- layout
@@ -93,7 +94,10 @@ class ConciliadorApp(tk.Tk):
                      font=(fuente(), 8, "bold"), anchor="w").pack(fill=tk.X, padx=28, pady=(18, 6))
             for page_id, texto, _ in items:
                 self._boton_nav(page_id, texto)
-
+        tk.Button(self.sidebar, text="⟳  Actualizar", bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"],
+                  activebackground=PALETTE["sidebar_hover"], activeforeground=PALETTE["text"],
+                  font=(fuente(), 10), bd=0, relief="flat", highlightthickness=0, anchor="w",
+                  padx=26, pady=9, cursor="hand2", command=self._on_actualizar).pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 16))
     def _boton_nav(self, page_id, texto):
         fila = tk.Frame(self.sidebar, bg=PALETTE["sidebar_bg"])
         fila.pack(fill=tk.X, padx=12, pady=1)
@@ -163,6 +167,18 @@ class ConciliadorApp(tk.Tk):
             self.paginas["preview"].on_archivo_cargado(self.hojas_disponibles)
 
     # ------------------------------------------------------------- archivo
+    def _ocupada(self):
+        return any(p.ocupada for p in self.paginas.values())
+
+    def _on_actualizar(self):
+        if self._ocupada():
+            messagebox.showwarning("Proceso en curso", "Espera a que finalice el proceso actual antes de actualizar.")
+            return
+        actualizador.verificar(self, True, self._cerrar)
+
+    def _cerrar(self):
+        logger.info("Cerrando aplicación")
+        self.destroy()
     def _on_abrir_archivo(self):
         ruta = filedialog.askopenfilename(title="Selecciona el archivo de Excel",
                                           filetypes=[("Archivos de Excel", "*.xlsx *.xlsm")])

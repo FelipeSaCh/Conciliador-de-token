@@ -4,10 +4,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from PIL import Image, ImageTk
-
-from ui.theme import PALETTE, aplicar_icono
-from ui.widgets import boton_secundario
+from ui.theme import PALETTE
 
 
 def abrir_con_sistema(ruta):
@@ -75,75 +72,3 @@ def seleccionar_tipos_documento(parent, tipos, preseleccionados=None):
     ventana.focus_set()
     parent.wait_window(ventana)
     return resultado["valor"]
-
-
-class VentanaVistaPreviaPDF(tk.Toplevel):
-    ZOOM = 1.6
-
-    def __init__(self, parent, ruta_pdf):
-        super().__init__(parent)
-        import pymupdf as fitz
-
-        self.title("Vista previa - Informe de IVA")
-        self.geometry("900x700")
-        self.configure(bg=PALETTE["bg"])
-        aplicar_icono(self)
-
-        self._fitz = fitz
-        self.ruta_pdf = ruta_pdf
-        self.documento = fitz.open(ruta_pdf)
-        self.pagina_actual = 0
-        self._imagen_tk = None
-
-        barra = ttk.Frame(self, style="TFrame", padding=14)
-        barra.pack(fill=tk.X)
-        self.btn_anterior = boton_secundario(barra, "‹ Anterior", lambda: self._ir(-1))
-        self.btn_anterior.pack(side=tk.LEFT)
-        self.lbl_pagina = ttk.Label(barra, text="", style="Subheader.TLabel")
-        self.lbl_pagina.pack(side=tk.LEFT, padx=16)
-        self.btn_siguiente = boton_secundario(barra, "Siguiente ›", lambda: self._ir(1))
-        self.btn_siguiente.pack(side=tk.LEFT)
-        boton_secundario(barra, "Abrir con visor predeterminado", self._abrir_externo).pack(side=tk.RIGHT)
-
-        contenedor = tk.Frame(self, bg=PALETTE["surface_alt"])
-        contenedor.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(contenedor, bg=PALETTE["surface_alt"], highlightthickness=0)
-        sy = ttk.Scrollbar(contenedor, orient="vertical", command=self.canvas.yview)
-        sx = ttk.Scrollbar(contenedor, orient="horizontal", command=self.canvas.xview)
-        self.canvas.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
-        sy.pack(side=tk.RIGHT, fill=tk.Y)
-        sx.pack(side=tk.BOTTOM, fill=tk.X)
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1 * (e.delta / 120) * 3), "units"))
-
-        self.protocol("WM_DELETE_WINDOW", self._cerrar)
-        self._mostrar_pagina()
-
-    def _mostrar_pagina(self):
-        pix = self.documento[self.pagina_actual].get_pixmap(matrix=self._fitz.Matrix(self.ZOOM, self.ZOOM))
-        imagen = Image.frombytes("RGBA" if pix.alpha else "RGB", [pix.width, pix.height], pix.samples)
-        self._imagen_tk = ImageTk.PhotoImage(imagen)
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self._imagen_tk)
-        self.canvas.configure(scrollregion=(0, 0, pix.width, pix.height))
-
-        total = len(self.documento)
-        self.lbl_pagina.configure(text=f"Página {self.pagina_actual + 1} de {total}")
-        self.btn_anterior.configure(state="normal" if self.pagina_actual > 0 else "disabled")
-        self.btn_siguiente.configure(state="normal" if self.pagina_actual < total - 1 else "disabled")
-
-    def _ir(self, delta):
-        nueva = self.pagina_actual + delta
-        if 0 <= nueva < len(self.documento):
-            self.pagina_actual = nueva
-            self._mostrar_pagina()
-
-    def _abrir_externo(self):
-        try:
-            abrir_con_sistema(self.ruta_pdf)
-        except Exception:
-            messagebox.showinfo("Abrir PDF", f"El archivo se encuentra en:\n{self.ruta_pdf}")
-
-    def _cerrar(self):
-        self.documento.close()
-        self.destroy()

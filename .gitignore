@@ -56,3 +56,8 @@ desktop.ini
 build/
 dist/
 *.spec
+dist/
+build/
+instaladores/
+*.build/
+*.dist/

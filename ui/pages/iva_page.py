@@ -1,11 +1,12 @@
 import tempfile
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from core.errors import ErrorSistema, ErrorUsuario
 from services.reportes.informe_iva import GeneradorInformeIVA
-from ui.dialogs import VentanaVistaPreviaPDF, seleccionar_tipos_documento
+from ui.dialogs import abrir_con_sistema, seleccionar_tipos_documento
 from ui.pages.base import Pagina, asignar_hojas
 from ui.widgets import boton_primario, boton_secundario, card, encabezado_card, habilitar_boton
 
@@ -140,15 +141,11 @@ class IvaPage(Pagina):
     def _on_vista_previa(self):
         if not self._informe_listo():
             return
-        try:
-            import pymupdf  # noqa: F401
-        except ImportError:
-            messagebox.showerror("Dependencia faltante", "No se encontró PyMuPDF. Instálalo con: pip install pymupdf")
-            return
-        ruta = Path(tempfile.gettempdir()) / "vista_previa_informe_iva.pdf"
+        ruta = Path(tempfile.gettempdir()) / f"vista_previa_informe_iva_{datetime.now():%Y%m%d_%H%M%S}.pdf"
         try:
             self.generador.generar_pdf(str(ruta))
+            abrir_con_sistema(ruta)
         except (ErrorUsuario, ErrorSistema) as e:
             messagebox.showerror("Error al generar vista previa", str(e))
-            return
-        VentanaVistaPreviaPDF(self.app, str(ruta))
+        except OSError as e:
+            messagebox.showerror("Vista previa", f"No se pudo abrir el PDF:\n{e}\n\nArchivo: {ruta}")
