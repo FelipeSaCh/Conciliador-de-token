@@ -1,17 +1,36 @@
 """
-pivote_movimientos.py
+pivotar_movimientos.py
 
 Módulo desacoplado para la transformación y reestructuración (pivotado)
 de hojas de movimientos contables y exportación con formato profesional en Excel.
 """
 
+import importlib.util
+import unicodedata
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 import pandas as pd
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from errors import ErrorSistema, ErrorUsuario, logger
+
+
+_MOTOR_LECTURA = (
+    "calamine"
+    if importlib.util.find_spec("python_calamine") is not None
+    and tuple(int(p) for p in pd.__version__.split(".")[:2]) >= (2, 2)
+    else None
+)
+
+
+def _leer_excel(ruta, **kwargs) -> pd.DataFrame:
+    return pd.read_excel(ruta, engine=_MOTOR_LECTURA, **kwargs)
+
+
+def _clave_columna(nombre) -> str:
+    texto = unicodedata.normalize("NFKD", str(nombre)).encode("ascii", "ignore").decode()
+    return "".join(ch for ch in texto.lower() if ch.isalnum())
 
 
 class TransformadorMovimientos:
@@ -22,6 +41,43 @@ class TransformadorMovimientos:
     COLUMNAS_REQUERIDAS = ["DEBITO", "CREDITO", "CUENTA", "NOM. CUENTA", "TIPO"]
     PREFIJOS_PERMITIDOS = ("FC", "GS", "DC", "DS", "GC", "CG", "GI")
     HOJA_DESTINO = "MOVS_AUD"
+    COLUMNA_FECHA_ORIGEN = "__FECHA_ORIGEN__"
+
+    # Cada formato se detecta por sus columnas requeridas (claves normalizadas sin tildes,
+    # espacios ni signos) y se traduce a los nombres del formato estándar.
+    FORMATOS: Dict[str, dict] = {
+        "estandar": {
+            "descripcion": "Movimientos estándar",
+            "requeridas": {
+                "DEBITO": ("debito",),
+                "CREDITO": ("credito",),
+                "CUENTA": ("cuenta",),
+                "NOM. CUENTA": ("nomcuenta",),
+                "TIPO": ("tipo",),
+            },
+            "opcionales": {},
+            "detalle_vacio": False,
+            "eliminar": (),
+        },
+        "auxiliar_documento": {
+            "descripcion": "Auxiliar por documento",
+            "requeridas": {
+                "DEBITO": ("debitos", "dbitos"),
+                "CREDITO": ("creditos", "crditos"),
+                "CUENTA": ("auxiliar",),
+                "NOM. CUENTA": ("descauxiliar",),
+                "TIPO": ("tipodocto",),
+                "NO.EXT": ("docto",),
+            },
+            "opcionales": {
+                "TERCERO": ("razonsocialtercerodocto", "raznsocialtercerodocto"),
+                "Nit/C.C.": ("nittercero",),
+                COLUMNA_FECHA_ORIGEN: ("fecha",),
+            },
+            "detalle_vacio": True,
+            "eliminar": ("neto", "basegravable", "comovto"),
+        },
+    }
 
     def __init__(
         self,
@@ -29,24 +85,95 @@ class TransformadorMovimientos:
         hoja_origen: str,
         prefijos_permitidos: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        avance_callback: Optional[Callable[[Optional[float]], None]] = None,
     ):
         self.ruta_entrada = Path(ruta_entrada)
         self.hoja_origen = hoja_origen
         # Usamos los prefijos enviados por la interfaz o caemos a los por defecto
         self.prefijos_permitidos = tuple(prefijos_permitidos) if prefijos_permitidos is not None else self.PREFIJOS_PERMITIDOS
         self.progress_callback = progress_callback
+        self.avance_callback = avance_callback
 
     def _notificar(self, mensaje: str) -> None:
         if self.progress_callback:
             self.progress_callback(mensaje)
         logger.info(mensaje)
 
+    def _avance(self, valor: Optional[float]) -> None:
+        """valor 0-100; None = fase sin progreso medible (barra indeterminada)."""
+        if self.avance_callback:
+            self.avance_callback(valor)
+
+    @classmethod
+    def detectar_formato(cls, columnas) -> Tuple[str, Dict[str, str]]:
+        claves = {}
+        for c in columnas:
+            claves.setdefault(_clave_columna(c), c)
+
+        for nombre, fmt in cls.FORMATOS.items():
+            mapeo = {}
+            completo = True
+            for destino, alias in fmt["requeridas"].items():
+                origen = next((claves[a] for a in alias if a in claves), None)
+                if origen is None:
+                    completo = False
+                    break
+                mapeo[origen] = destino
+            if not completo:
+                continue
+            for destino, alias in fmt["opcionales"].items():
+                origen = next((claves[a] for a in alias if a in claves), None)
+                if origen is not None:
+                    mapeo[origen] = destino
+            return nombre, mapeo
+
+        detalle = "; ".join(
+            f"{fmt['descripcion']}: {', '.join(fmt['requeridas'])}" for fmt in cls.FORMATOS.values()
+        )
+        raise ErrorUsuario(f"La hoja no coincide con ningún formato conocido. Formatos soportados -> {detalle}")
+
+    @classmethod
+    def obtener_tipos(cls, ruta: Union[str, Path], hoja: str) -> Tuple[List[str], str]:
+        columnas = _leer_excel(ruta, sheet_name=hoja, nrows=0).columns
+        nombre, mapeo = cls.detectar_formato(columnas)
+        col_tipo = next(origen for origen, destino in mapeo.items() if destino == "TIPO")
+        df = _leer_excel(ruta, sheet_name=hoja, usecols=[col_tipo])
+        tipos = df[col_tipo].dropna().astype(str).str.strip().str.upper().unique()
+        return sorted(t for t in tipos if t), cls.FORMATOS[nombre]["descripcion"]
+
+    def _normalizar_formato(self, df: pd.DataFrame) -> pd.DataFrame:
+        nombre, mapeo = self.detectar_formato(df.columns)
+        fmt = self.FORMATOS[nombre]
+        self._notificar(f"Formato detectado: {fmt['descripcion']}")
+
+        if nombre == "estandar":
+            return df
+
+        df = df.drop(columns=[c for c in df.columns if _clave_columna(c) in fmt["eliminar"]])
+        df = df.rename(columns=mapeo)
+
+        if self.COLUMNA_FECHA_ORIGEN in df.columns:
+            fechas = pd.to_datetime(df[self.COLUMNA_FECHA_ORIGEN], errors="coerce", dayfirst=True)
+            df["AÑO"] = fechas.dt.year.astype("Int64")
+            df["MES"] = fechas.dt.month.astype("Int64")
+            df["DIA"] = fechas.dt.day.astype("Int64")
+            df = df.drop(columns=[self.COLUMNA_FECHA_ORIGEN])
+
+        if fmt["detalle_vacio"] and "DETALLE" not in df.columns:
+            df["DETALLE"] = ""
+
+        return df
+
     def ejecutar(self) -> Path:
         """Ejecuta el flujo completo de lectura, filtrado, transformación, pivotado y diseño Excel."""
         try:
+            self._avance(None)
             df = self._cargar_y_validar()
+            self._avance(20)
             df_final, cols_indice = self._transformar_y_pivotar(df)
+            self._avance(40)
             self._guardar_con_formato(df_final, cols_indice)
+            self._avance(100)
 
             self._notificar(f"Guardado finalizado exitosamente en la hoja '{self.HOJA_DESTINO}'.")
             return self.ruta_entrada
@@ -63,20 +190,13 @@ class TransformadorMovimientos:
             raise ErrorUsuario(f"El archivo origen no existe: {self.ruta_entrada}")
 
         try:
-            df = pd.read_excel(self.ruta_entrada, sheet_name=self.hoja_origen)
+            df = _leer_excel(self.ruta_entrada, sheet_name=self.hoja_origen)
         except ValueError as e:
             raise ErrorUsuario(f"La hoja '{self.hoja_origen}' no existe en el archivo.") from e
         except Exception as e:
             raise ErrorSistema(f"No se pudo leer el archivo de Excel: {e}") from e
 
-        # Verificar columnas obligatorias iniciales
-        faltantes = [col for col in self.COLUMNAS_REQUERIDAS if col not in df.columns]
-        if faltantes:
-            raise ErrorUsuario(
-                f"La hoja seleccionada no contiene las columnas requeridas: {', '.join(faltantes)}"
-            )
-
-        return df
+        return self._normalizar_formato(df)
 
     def _transformar_y_pivotar(self, df: pd.DataFrame) -> tuple[pd.DataFrame, List[str]]:
         self._notificar("Estandarizando nombres de columnas y limpiando basura...")
@@ -168,23 +288,20 @@ class TransformadorMovimientos:
             df_det_temp = df_calc[claves_agrupacion + ["CUENTA", "DETALLE"]].copy()
             prefijos_detalle = ('6', '5', '7', '15')
             
-            df_det_temp["Prioridad"] = df_det_temp["CUENTA"].astype(str).str.strip().apply(
-                lambda x: 1 if x.startswith(prefijos_detalle) else 2
-            )
+            df_det_temp["Prioridad"] = 2 - df_det_temp["CUENTA"].astype(str).str.strip().str.startswith(prefijos_detalle).astype(int)
             
-            df_det_temp.sort_values(by=claves_agrupacion + ["Prioridad"], inplace=True)
+            df_det_temp.sort_values(by=claves_agrupacion + ["Prioridad"], inplace=True, kind="stable")
             df_detalle_elegido = df_det_temp.drop_duplicates(subset=claves_agrupacion, keep='first')[claves_agrupacion + ["DETALLE"]]
 
         # 8. Unificar importes
-        df_pivot = pd.pivot_table(
-            df_calc,
-            index=claves_agrupacion,
-            columns="CUENTA_CONCAT",
-            values="VALOR_NETO",
-            aggfunc="sum",
-            fill_value=0,
-        ).reset_index()
+        df_pivot = (
+            df_calc.groupby(claves_agrupacion + ["CUENTA_CONCAT"])["VALOR_NETO"]
+            .sum()
+            .unstack("CUENTA_CONCAT", fill_value=0)
+            .reset_index()
+        )
         df_pivot.columns.name = None
+        self._avance(30)
 
         # 9. Recuperar datos descriptivos
         if cols_descriptivas:
@@ -277,11 +394,29 @@ class TransformadorMovimientos:
         ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
         ALIGN_RIGHT = Alignment(horizontal="right", vertical="center")
 
+        FMT_MONEDA = '"$" #,##0.00'
+        ESTILOS = {
+            "movs_aud_hdr": (FILL_HEADER, FONT_HEADER, BORDER_HEADER_CELL, ALIGN_CENTER, "General"),
+            "movs_aud_txt_par": (FILL_ROW_EVEN, FONT_BODY, BORDER_BODY_ROW, ALIGN_LEFT, "General"),
+            "movs_aud_txt_impar": (FILL_ROW_ODD, FONT_BODY, BORDER_BODY_ROW, ALIGN_LEFT, "General"),
+            "movs_aud_num_par": (FILL_ROW_EVEN, FONT_BODY, BORDER_BODY_ROW, ALIGN_RIGHT, FMT_MONEDA),
+            "movs_aud_num_impar": (FILL_ROW_ODD, FONT_BODY, BORDER_BODY_ROW, ALIGN_RIGHT, FMT_MONEDA),
+        }
+
         engine_kwargs = {'keep_vba': True} if self.ruta_entrada.suffix.lower() == '.xlsm' else {}
 
+        self._avance(None)
         with pd.ExcelWriter(self.ruta_entrada, engine="openpyxl", mode='a', if_sheet_exists='replace', engine_kwargs=engine_kwargs) as writer:
             df_final.to_excel(writer, index=False, sheet_name=self.HOJA_DESTINO)
             worksheet = writer.sheets[self.HOJA_DESTINO]
+            self._avance(55)
+
+            existentes = set(writer.book.named_styles)
+            for nombre, (fill, font, border, align, num_fmt) in ESTILOS.items():
+                if nombre not in existentes:
+                    writer.book.add_named_style(NamedStyle(
+                        name=nombre, fill=fill, font=font, border=border, alignment=align, number_format=num_fmt
+                    ))
 
             max_row = df_final.shape[0] + 1
             max_col = df_final.shape[1]
@@ -291,12 +426,7 @@ class TransformadorMovimientos:
 
             for col_idx, col_nombre in enumerate(df_final.columns, start=1):
                 col_letter = get_column_letter(col_idx)
-                celda = worksheet.cell(row=1, column=col_idx)
-
-                celda.fill = FILL_HEADER
-                celda.font = FONT_HEADER
-                celda.alignment = ALIGN_CENTER
-                celda.border = BORDER_HEADER_CELL
+                worksheet.cell(row=1, column=col_idx).style = "movs_aud_hdr"
 
                 texto_col = str(col_nombre)
                 longitud_texto = len(texto_col)
@@ -319,21 +449,24 @@ class TransformadorMovimientos:
                     max_lineas_encabezado = lineas
 
             worksheet.row_dimensions[1].height = min(max(24, max_lineas_encabezado * 14), 32)
-            
-            for row_idx in range(2, max_row + 1):
-                fill_row = FILL_ROW_EVEN if row_idx % 2 == 0 else FILL_ROW_ODD
+
+            total_filas = max(max_row - 1, 1)
+            paso = max(total_filas // 100, 1)
+            for row_idx, fila in enumerate(
+                worksheet.iter_rows(min_row=2, max_row=max_row, max_col=max_col), start=2
+            ):
+                if (row_idx - 2) % paso == 0:
+                    self._avance(55 + 40 * (row_idx - 1) / total_filas)
+                sufijo = "par" if row_idx % 2 == 0 else "impar"
+                est_txt = f"movs_aud_txt_{sufijo}"
+                est_num = f"movs_aud_num_{sufijo}"
                 worksheet.row_dimensions[row_idx].height = 20
 
-                for col_idx in range(1, max_col + 1):
-                    celda = worksheet.cell(row=row_idx, column=col_idx)
-                    celda.fill = fill_row
-                    celda.font = FONT_BODY
-                    celda.border = BORDER_BODY_ROW
-
-                    if col_idx <= num_cols_indice:
-                        celda.alignment = ALIGN_LEFT
-                    else:
-                        celda.alignment = ALIGN_RIGHT
-                        celda.number_format = '"$" #,##0.00'
+                for celda in fila[:num_cols_indice]:
+                    celda.style = est_txt
+                for celda in fila[num_cols_indice:]:
+                    celda.style = est_num
 
             worksheet.freeze_panes = "A2"
+            self._notificar("Escribiendo archivo en disco...")
+            self._avance(None)

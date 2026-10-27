@@ -1,3 +1,4 @@
+#main.py
 import sys
 from errors import logger, registrar_excepcion_no_controlada
 

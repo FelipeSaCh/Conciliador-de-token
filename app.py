@@ -1,3 +1,4 @@
+#app.py
 
 import queue
 import threading
@@ -213,6 +214,10 @@ class ConciliadorApp(tk.Tk):
             self.hoja_pivote_var.set("")
         if hasattr(self, "lbl_estado_pivote"):
             self.lbl_estado_pivote.configure(text="")
+        if hasattr(self, "progress_pivote"):
+            self.progress_pivote.stop()
+            self.progress_pivote.configure(mode="determinate", value=0)
+            self.lbl_pct_pivote.configure(text="")
         if hasattr(self, "_poblar_checklist_tipos"):  # NUEVO
             self._poblar_checklist_tipos([])
 
@@ -1279,6 +1284,13 @@ class ConciliadorApp(tk.Tk):
         
         self.lbl_estado_pivote = ttk.Label(fila_accion, text="", style="SubheaderCard.TLabel", background=PALETTE["bg"])
         self.lbl_estado_pivote.pack(side=tk.LEFT, padx=(20, 0))
+
+        fila_progreso = ttk.Frame(wrapper, style="TFrame")
+        fila_progreso.pack(fill=tk.X, pady=(0, 20))
+        self.progress_pivote = ttk.Progressbar(fila_progreso, mode="determinate", maximum=100, style="TProgressbar")
+        self.progress_pivote.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.lbl_pct_pivote = ttk.Label(fila_progreso, text="", style="Subheader.TLabel", width=6, anchor="e")
+        self.lbl_pct_pivote.pack(side=tk.LEFT, padx=(12, 0))
         
         self._procesando_pivote = False
 
@@ -1289,35 +1301,27 @@ class ConciliadorApp(tk.Tk):
     def _refrescar_tipos_movimientos(self, *_):
         ruta = self.file_path.get()
         hoja = self.hoja_pivote_var.get().strip()
-        
+
         if not ruta or not hoja or hoja not in self.hojas_disponibles:
             self._poblar_checklist_tipos([])
             return
 
-        # Limpiar y mostrar estado de carga
         self._poblar_checklist_tipos([])
         ttk.Label(self.lista_tipos_movs.inner, text="⏳ Extrayendo tipos únicos...", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
-            
+
         def _tarea():
             try:
-                # Leer solo encabezados para identificar la columna TIPO rápido
-                df_cols = pd.read_excel(ruta, sheet_name=hoja, nrows=0)
-                col_tipo = [c for c in df_cols.columns if str(c).strip().upper() == "TIPO"]
-
-                if not col_tipo:
-                    self.after(0, lambda: self._poblar_checklist_tipos([]))
-                    return
-
-                # Leer únicamente esa columna y obtener únicos limpios
-                df = pd.read_excel(ruta, sheet_name=hoja, usecols=[col_tipo[0]])
-                tipos_unicos = df[col_tipo[0]].dropna().astype(str).str.strip().str.upper().unique()
-                tipos_unicos = sorted([t for t in tipos_unicos if t])
-
+                tipos_unicos, formato = TransformadorMovimientos.obtener_tipos(ruta, hoja)
                 self.after(0, lambda: self._poblar_checklist_tipos(tipos_unicos))
+                self.after(0, lambda: self.lbl_estado_pivote.configure(text=f"Formato detectado: {formato}"))
+            except ErrorUsuario as e:
+                msg = str(e)
+                self.after(0, lambda: self._poblar_checklist_tipos([]))
+                self.after(0, lambda: self.lbl_estado_pivote.configure(text=msg))
             except Exception as e:
                 logger.warning(f"Error al extraer los tipos de la hoja {hoja}: {e}")
                 self.after(0, lambda: self._poblar_checklist_tipos([]))
-                
+
         threading.Thread(target=_tarea, daemon=True).start()
 
     def _poblar_checklist_tipos(self, tipos):
@@ -1328,7 +1332,7 @@ class ConciliadorApp(tk.Tk):
         self.tipo_vars = {}
 
         if not tipos:
-            ttk.Label(self.lista_tipos_movs.inner, text="Selecciona una hoja válida que contenga la columna 'TIPO'.", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
+            ttk.Label(self.lista_tipos_movs.inner, text="Selecciona una hoja válida de movimientos (formato estándar o auxiliar por documento).", style="SubheaderCard.TLabel").pack(anchor="w", padx=8, pady=12)
         else:
             prefijos_default = TransformadorMovimientos.PREFIJOS_PERMITIDOS
             
@@ -1380,6 +1384,7 @@ class ConciliadorApp(tk.Tk):
         self._procesando_pivote = True
         self._set_btn_enabled(self.btn_pivotar, False)
         self.lbl_estado_pivote.configure(text="Transformando movimientos...")
+        self._set_avance_pivote(0)
 
         # Pasamos la lista de tipos al hilo
         hilo = threading.Thread(
@@ -1393,6 +1398,9 @@ class ConciliadorApp(tk.Tk):
         def _callback_progreso(msg):
             self._cola_eventos.put(("pivote_log", msg))
 
+        def _callback_avance(valor):
+            self._cola_eventos.put(("pivote_avance", valor))
+
         try:
             # Enviamos los prefijos customizados al motor
             transformador = TransformadorMovimientos(
@@ -1400,6 +1408,7 @@ class ConciliadorApp(tk.Tk):
                 hoja_origen=hoja,
                 prefijos_permitidos=tipos_seleccionados,
                 progress_callback=_callback_progreso,
+                avance_callback=_callback_avance,
             )
             ruta_final = transformador.ejecutar()
             self._cola_eventos.put(("pivote_exito", str(ruta_final)))
@@ -1414,8 +1423,27 @@ class ConciliadorApp(tk.Tk):
                 ("pivote_error_sistema", f"Ocurrió un error inesperado: {e}")
             )
 
-    def _finalizar_pivote(self):
+    def _set_avance_pivote(self, valor):
+        barra = self.progress_pivote
+        if valor is None:
+            if str(barra["mode"]) != "indeterminate":
+                barra.configure(mode="indeterminate")
+                barra.start(12)
+            return
+        if str(barra["mode"]) != "determinate":
+            barra.stop()
+            barra.configure(mode="determinate")
+        barra["value"] = valor
+        self.lbl_pct_pivote.configure(text=f"{int(valor)}%")
+
+    def _finalizar_pivote(self, exito=False):
         self._procesando_pivote = False
+        if exito:
+            self._set_avance_pivote(100)
+        else:
+            self.progress_pivote.stop()
+            self.progress_pivote.configure(mode="determinate", value=0)
+            self.lbl_pct_pivote.configure(text="")
         self._set_btn_enabled(self.btn_pivotar, True)
 
     def _build_tab_token(self):
@@ -1837,8 +1865,10 @@ class ConciliadorApp(tk.Tk):
                     messagebox.showerror("Error", payload)
                 elif tipo == "pivote_log":
                     self.lbl_estado_pivote.configure(text=payload)
+                elif tipo == "pivote_avance":
+                    self._set_avance_pivote(payload)
                 elif tipo == "pivote_exito":
-                    self._finalizar_pivote()
+                    self._finalizar_pivote(exito=True)
                     self.lbl_estado_pivote.configure(text="¡Transformación exitosa!")
                     messagebox.showinfo("Éxito", f"El archivo ha sido guardado en:\n{payload}")
                 elif tipo == "pivote_error_usuario":

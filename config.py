@@ -1,3 +1,4 @@
+#config.py
 from pathlib import Path
 from version import __version__
 
