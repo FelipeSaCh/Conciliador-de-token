@@ -1,16 +1,15 @@
-#main.py
 import sys
-from errors import logger, registrar_excepcion_no_controlada
+
+from core.errors import logger, registrar_excepcion_no_controlada
 
 
 def main():
     sys.excepthook = registrar_excepcion_no_controlada
     logger.info("Iniciando aplicación")
 
-    from app import ConciliadorApp
+    from ui.app import ConciliadorApp
 
-    app = ConciliadorApp()
-    app.mainloop()
+    ConciliadorApp().mainloop()
 
 
 if __name__ == "__main__":
