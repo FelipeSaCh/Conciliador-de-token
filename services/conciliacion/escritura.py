@@ -6,10 +6,13 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from core.config import DUPLICADO_FILL_COLOR, OUTPUT_SHEETS_TO_HIDE, RED_FILL_COLOR
+from core.config import (
+    ALERTA_FILL_COLOR, DUPLICADO_FILL_COLOR, OUTPUT_SHEETS_TO_HIDE, PERFIL_TRIBUTARIO_ACTIVO, RED_FILL_COLOR,
+)
 from core.errors import ErrorSistema, ErrorUsuario
+from services.conciliacion.alertas import COL_ALERTAS, diccionario_autorretenedores
 from shared.excel_io import escritor_excel
-from shared.texto import normalizar_nit
+from shared.texto import VALORES_NULOS
 
 COLUMNAS_INYECTADAS = [
     ('AUTORRETENCION', 'auto', "cc99ff", None),
@@ -18,7 +21,13 @@ COLUMNAS_INYECTADAS = [
     ('IVA', 'iva', "FF9900", '#,##0.00'),
     ('OTROS IMPUESTOS', 'otros', "FFC000", '#,##0.00'),
     ('RETENCIONES', 'ret', "F4B183", '#,##0.00'),
+    ('RETEFUENTE', 'retefuente', "cc99ff", '#,##0.00'),
+    ('RETEIVA', 'reteiva', "F472B6", '#,##0.00'),
+    ('ALERTA', 'alerta', ALERTA_FILL_COLOR, None),
 ]
+NOMBRES_INYECTADOS = {n for n, *_ in COLUMNAS_INYECTADAS}  # incluye las desactivadas, para limpiar ejecuciones previas
+if not PERFIL_TRIBUTARIO_ACTIVO:
+    COLUMNAS_INYECTADAS = [c for c in COLUMNAS_INYECTADAS if c[0] != 'RETEIVA']
 
 COLOR_MOTIVOS = {
     'DIAN - Gasto Personal': 'FFCCFF',
@@ -51,6 +60,7 @@ def _fill(color):
 THIN_BORDER = Border(*(Side(style='thin', color='D9D9D9'),) * 4)
 FILL_ROJO = _fill(RED_FILL_COLOR)
 FILL_AMARILLO = _fill('FADC46')
+FILL_ALERTA = _fill(ALERTA_FILL_COLOR)
 FONT_ROJA = Font(name="Arial", size=10, color="FF0000")
 FONT_NORMAL = Font(name="Arial", size=10)
 FONT_NEGRITA = Font(bold=True)
@@ -62,21 +72,6 @@ def _valor(lista, i, defecto=False):
 
 def _indice(df, columna):
     return df.columns.get_loc(columna) + 1 if columna in df.columns else None
-
-
-def _diccionario_autorretenedores(df_auto):
-    cols = df_auto.columns
-    col_nit = next((c for c in cols if 'NIT' in str(c).upper()), None)
-    col_com = next((c for c in cols if 'COMENT' in str(c).upper()), None) or \
-        next((c for c in cols if 'NOMBRE' in str(c).upper()), None)
-    if not (col_nit and col_com):
-        return {}
-    dic = {}
-    for nit, comentario in zip(df_auto[col_nit], df_auto[col_com]):
-        nit = normalizar_nit(nit)
-        if nit:
-            dic[nit] = str(comentario).strip() or 'AUTORRETENEDOR'
-    return dic
 
 
 def _clave_orden_auditoria(row):
@@ -116,10 +111,9 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
     # Limpia columnas inyectadas en una ejecución previa
     col_detalle = next((c for c in range(1, ws.max_column + 1) if encabezado(c) == 'DETALLE'), 0)
     if col_detalle:
-        nombres = {n for n, *_ in COLUMNAS_INYECTADAS}
         previas = 0
-        for i in range(1, len(COLUMNAS_INYECTADAS) + 1):
-            if encabezado(col_detalle + i) not in nombres:
+        for i in range(1, len(NOMBRES_INYECTADOS) + 1):
+            if encabezado(col_detalle + i) not in NOMBRES_INYECTADOS:
                 break
             previas += 1
         if previas:
@@ -138,12 +132,19 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
         return
 
     registros = df_res.to_dict('records')
-    vacio = {'BASE': 0, 'BASE_2': 0, 'IVA': 0, 'OTROS IMPUESTOS': 0, 'RETENCIONES': 0}
+    vacio = {}
     max_col = ws.max_column
     filas = []
-    for idx, r in enumerate(range(header_row + 1, ws.max_row + 1)):
+    clave_cols = range(ws.min_column - 1, ws.min_column + 5) if max_col >= 6 else ()
+    idx = 0
+    for r in range(header_row + 1, ws.max_row + 1):
         valores = [ws.cell(row=r, column=c).value for c in range(1, max_col + 1)]
-        calc = registros[idx] if idx < len(registros) else vacio
+        # Misma regla que limpiar_hoja_auditoria: filas con las 6 primeras columnas vacías no tienen registro
+        fantasma = bool(clave_cols) and all(
+            str(valores[c] if valores[c] is not None else '').strip().lower() in ('', *VALORES_NULOS) for c in clave_cols
+        )
+        calc = vacio if fantasma or idx >= len(registros) else registros[idx]
+        idx += 0 if fantasma else 1
         nit = re.sub(r'\D', '', str(valores[col_nit - 1])) if col_nit else ''
         filas.append({
             'original_values': valores,
@@ -152,6 +153,9 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
             'iva': calc.get('IVA', 0),
             'otros': calc.get('OTROS IMPUESTOS', 0),
             'ret': calc.get('RETENCIONES', 0),
+            'retefuente': calc.get('RETEFUENTE', 0),
+            'reteiva': calc.get('RETEIVA', 0),
+            'alerta': calc.get('ALERTA', ''),
             'auto': dict_auto.get(nit, ''),
             'tipo': str(valores[col_tipo - 1]).strip().upper() if col_tipo else '',
             'tercero': str(valores[col_tercero - 1]).strip().upper(),
@@ -176,13 +180,15 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
             celda.value = fila[clave]
             if formato:
                 celda.number_format = formato
+            elif clave == 'alerta' and fila[clave]:
+                celda.fill = FILL_ALERTA
         for c in range(idx_insert, len(orig) + 1):
             ws.cell(row=r, column=c + n_iny).value = orig[c - 1]
 
 
 def _formato_numerico(hojas_df):
     for ws, df in hojas_df:
-        for col in ('BASE', 'BASE_2', 'IVA', 'OTROS IMPUESTOS', 'RETENCIONES', 'Total'):
+        for col in ('BASE', 'BASE_2', 'IVA', 'OTROS IMPUESTOS', 'RETENCIONES', 'RETEFUENTE', 'RETEIVA', 'Total'):
             if col in df.columns:
                 c = df.columns.get_loc(col) + 1
                 for r in range(2, len(df) + 2):
@@ -215,7 +221,8 @@ def _formatear_dian_vs_cont(ws, df, res):
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = THIN_BORDER
 
-    ci = {k: _indice(df, k) for k in ('Fecha', 'Novedad', 'Tipo de documento', 'BASE', 'IVA', 'Num.Ext', 'NIT Emisor')}
+    ci = {k: _indice(df, k) for k in ('Fecha', 'Novedad', 'Tipo de documento', 'BASE', 'IVA', 'Num.Ext', 'NIT Emisor',
+                                      COL_ALERTAS)}
     fills = {}
 
     for r in range(2, max_row + 1):
@@ -250,6 +257,8 @@ def _formatear_dian_vs_cont(ws, df, res):
             ws.cell(row=r, column=ci['Num.Ext']).fill = FILL_ROJO
         if ci['NIT Emisor'] and _valor(res.dif_nit, i):
             ws.cell(row=r, column=ci['NIT Emisor']).fill = FILL_ROJO
+        if ci[COL_ALERTAS] and ws.cell(row=r, column=ci[COL_ALERTAS]).value:
+            ws.cell(row=r, column=ci[COL_ALERTAS]).fill = FILL_ALERTA
 
     if ci['BASE'] and ci['IVA']:
         _recuadrar_parejas(ws, res.box_color, min(ci['BASE'], ci['IVA']), max(ci['BASE'], ci['IVA']))
@@ -341,7 +350,7 @@ def escribir_resultados(file_path, sheet_names, nombre_dc, df_resultado, df_audi
             wb = writer.book
             ws = writer.sheets['DIAN VS CONT']
 
-            dict_auto = _diccionario_autorretenedores(df_autorretenedores)
+            dict_auto = diccionario_autorretenedores(df_autorretenedores)
             inyectar_columnas(wb, sheet_names['aud_comp'], df_res_auditoria, dict_auto)
             inyectar_columnas(wb, nombre_dc, res.df_res_dc, dict_auto)
 

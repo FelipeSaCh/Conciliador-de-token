@@ -50,9 +50,11 @@ def tiene_caracter_especial(serie):
     return serie.fillna('').astype(str).str.contains(PATRON_CARACTERES_ESPECIALES, regex=True, na=False)
 
 
-def mascara_duplicados(serie_num_ext):
+def mascara_duplicados(serie_num_ext, serie_nit=None):
+    """Duplicado = mismo Num.Ext y, si se indica, mismo NIT (folios iguales de terceros distintos no lo son)."""
     limpio = normalizar_num_ext(serie_num_ext)
-    return limpio.duplicated(keep=False) & (limpio != '')
+    clave = limpio if serie_nit is None else limpio + '|' + serie_nit.map(normalizar_nit)
+    return clave.duplicated(keep=False) & (limpio != '')
 
 
 def nombre_archivo_seguro(nombre):

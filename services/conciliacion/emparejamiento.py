@@ -1,13 +1,14 @@
 """Emparejamiento DIAN vs Contabilidad vs Devoluciones y cálculo de diferencias."""
 import difflib
 from dataclasses import dataclass, field
-from shared.texto import limpiar_codigo, normalizar_nit, normalizar_num_ext
+
 import numpy as np
 import pandas as pd
 
 from core.config import COLUMNAS_DIAN_VS_CONT, UMBRAL_TOLERANCIA
-from shared.dataframes import a_numero
-from shared.texto import limpiar_codigo, normalizar_nit
+from shared.dataframes import a_numero, contiene
+from shared.texto import normalizar_nit, normalizar_num_ext
+from services.conciliacion.alertas import PATRON_NOTA_CREDITO, COL_ALERTAS, alertas_conciliacion, tolerancia
 from services.conciliacion.preparacion import (
     PRIORIDAD_CONT, PRIORIDAD_DEVOL, PRIORIDAD_DIAN, preparar_contable, preparar_dian, procesar_seriales,
 )
@@ -60,19 +61,36 @@ def _agregar_novedad(df, mask, texto):
     df.loc[mask, 'Novedad'] = np.where(actual == '', texto, actual + f' / {texto}')
 
 
+def _separar_por_tercero(df, mask):
+    """Num.Ext compartido por terceros distintos: cada CONT se une al DIAN cuyo emisor/receptor coincide con su NIT."""
+    grupos = df[mask].groupby('Num.Ext_Clean').filter(lambda g: len(g) > 2)
+    if grupos.empty:
+        return
+    emisor = df['NIT Emisor'].map(normalizar_nit)
+    receptor = df['NIT Receptor'].map(normalizar_nit)
+    for clave, grupo in grupos.groupby('Num.Ext_Clean'):
+        dian = list(grupo.index[grupo['Prioridad_Fila'] == PRIORIDAD_DIAN])
+        for c in grupo.index[grupo['Prioridad_Fila'] == PRIORIDAD_CONT]:
+            d = next((d for d in dian if emisor[c] and emisor[c] in (emisor[d], receptor[d])), None)
+            if d is not None:
+                dian.remove(d)
+                df.loc[[d, c], 'Num.Ext_Clean'] = f"{clave}@{emisor[c]}"
+
+
 def _emparejar_flexible(df, mask_huerfano):
-    """Huérfanos DIAN/CONT del mismo NIT: se unen por similitud de folio si cuadra la BASE o el IVA."""
+    """Huérfanos DIAN/CONT del mismo NIT: se unen por similitud de folio si cuadra la BASE o el IVA (distintos de 0)."""
     df['Fue_Fuzzy_Match'] = False
-    huerfanos = df[mask_huerfano]
+    es_nc = (df['Prioridad_Fila'] == PRIORIDAD_DIAN) & contiene(df['Tipo de documento'], PATRON_NOTA_CREDITO)
+    huerfanos = df[mask_huerfano & ~es_nc]
     if huerfanos.empty:
         return
 
-    nit = limpiar_codigo(df['NIT Emisor'])
+    nit = df['NIT Emisor'].map(normalizar_nit)
     base = a_numero(df['BASE'])
     iva = a_numero(df['IVA'])
     folio = df['Num.Ext_Clean']
 
-    for _, grupo in huerfanos.groupby(nit[mask_huerfano]):
+    for _, grupo in huerfanos.groupby(nit[huerfanos.index]):
         dian = grupo.index[grupo['Prioridad_Fila'] == PRIORIDAD_DIAN]
         cont = grupo.index[grupo['Prioridad_Fila'] == PRIORIDAD_CONT]
         if not len(dian) or not len(cont):
@@ -81,7 +99,9 @@ def _emparejar_flexible(df, mask_huerfano):
         for d in dian:
             for c in cont:
                 # DIAN es positivo y CONT negativo: se suman
-                if abs(base[d] + base[c]) > UMBRAL_TOLERANCIA and abs(iva[d] + iva[c]) > UMBRAL_TOLERANCIA:
+                cuadra_base = base[d] != 0 and abs(base[d] + base[c]) <= tolerancia(base[d])
+                cuadra_iva = iva[d] != 0 and abs(iva[d] + iva[c]) <= UMBRAL_TOLERANCIA
+                if not (cuadra_base or cuadra_iva):
                     continue
                 sim = similitud_folios(folio[d], folio[c])
                 if sim > SIMILITUD_MINIMA:
@@ -124,21 +144,23 @@ def conciliar_con_devoluciones(df_unificado, df_aud_dc, seriales_iva_dc, seriale
     dian_rest = [i for i in dian_idx if i not in emp_dian]
     dc_rest = [i for i in dc_idx if i not in emp_dc]
     if dian_rest and dc_rest:
-        nit_simple = lambda v: str(v).replace('.0', '').strip()
         candidatos = []
         for d in dian_rest:
-            nit_d = nit_simple(df_unificado.at[d, 'NIT Emisor'])
+            nit_d = normalizar_nit(df_unificado.at[d, 'NIT Emisor'])
             if not nit_d:
                 continue
             base_d = pd.to_numeric(df_unificado.at[d, 'BASE'], errors='coerce')
             base_d = 0.0 if pd.isna(base_d) else base_d
+            if base_d == 0:
+                continue
             folio_d = df_unificado.at[d, 'Num.Ext_Clean']
             for c in dc_rest:
-                if nit_d != nit_simple(df_dc.at[c, 'NIT Emisor']):
+                if nit_d != normalizar_nit(df_dc.at[c, 'NIT Emisor']):
                     continue
                 base_c = pd.to_numeric(df_dc.at[c, 'BASE'], errors='coerce')
                 base_c = 0.0 if pd.isna(base_c) else base_c
-                if abs(base_d - base_c) > UMBRAL_TOLERANCIA:
+                # DIAN positivo, DEVOL negativo: se suman
+                if abs(base_d + base_c) > tolerancia(base_d):
                     continue
                 sim = similitud_folios(folio_d, df_dc.at[c, 'Num.Ext_Clean'])
                 if sim > SIMILITUD_MINIMA:
@@ -193,9 +215,10 @@ def _marcar_diferencias_valores(df, mask_pairs):
     df['Diff_BASE'] = False
     df['Diff_IVA'] = False
     df['Box_Color'] = ''
-    df.loc[mask_pairs, 'Diff_BASE'] = suma_base.abs() > UMBRAL_TOLERANCIA
+    tol = tolerancia(base.abs()[mask_pairs].groupby(claves).transform('max'))
+    df.loc[mask_pairs, 'Diff_BASE'] = suma_base.abs() > tol
     df.loc[mask_pairs, 'Diff_IVA'] = suma_iva.abs() > UMBRAL_TOLERANCIA
-    df.loc[mask_pairs, 'Box_Color'] = np.where(suma_total.abs() <= UMBRAL_TOLERANCIA, 'BLACK', 'YELLOW')
+    df.loc[mask_pairs, 'Box_Color'] = np.where(suma_total.abs() <= tol, 'BLACK', 'YELLOW')
 
 
 def _marcar_diferencias_nit(df, mask_pairs):
@@ -214,6 +237,8 @@ def _marcar_diferencias_nit(df, mask_pairs):
             df.loc[invalidos + list(idx_dian), 'Diff_NIT'] = True
 
     _agregar_novedad(df, df['Diff_NIT'], 'No coincide tercero')
+
+
 def _emparejar_por_documento(df):
     """CONT sin Num.Ext: Tipo de documento + CUFE/CUDE como Num.Ext contra huérfanos DIAN."""
     mask_cont = (df['Prioridad_Fila'] == PRIORIDAD_CONT) & (df['Novedad'] == 'CONT - Sin Num.Ext')
@@ -242,9 +267,10 @@ def _emparejar_por_documento(df):
         df.loc[[d, c], 'Novedad'] = ''
         df.loc[[d, c], 'Conteo_Pareja'] = 2
 
+
 def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorretenedores,
                           df_aud_dc=None, seriales_iva_dc=None, seriales_base_dc=None, seriales_base2_dc=None,
-                          mapa_otros_imp=None):
+                          mapa_otros_imp=None, perfil=None):
     df_dian = preparar_dian(df_auditoria)
     df_cont = preparar_contable(df_aud_comp, df_res_auditoria, PRIORIDAD_CONT, 'CONT')
     df = pd.concat([df_dian, df_cont], ignore_index=True)
@@ -257,6 +283,8 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
     # Emparejamiento exacto + flexible solo para registros aptos
     df['Conteo_Pareja'] = 1
     mask_matchable = (df['Num.Ext_Clean'] != '') & (df['Novedad'] == '')
+    _recontar_parejas(df, mask_matchable)
+    _separar_por_tercero(df, mask_matchable)
     _recontar_parejas(df, mask_matchable)
     _emparejar_flexible(df, mask_matchable & (df['Conteo_Pareja'] == 1))
     _recontar_parejas(df, mask_matchable)
@@ -297,12 +325,13 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
     mask_pairs = df['Conteo_Pareja'] >= 2
     _marcar_diferencias_valores(df, mask_pairs)
     _marcar_diferencias_nit(df, mask_pairs)
+    df[COL_ALERTAS] = alertas_conciliacion(df, PRIORIDAD_DIAN, PRIORIDAD_CONT, mask_pairs, perfil)
 
     fuzzy = df['Fue_Fuzzy_Match'] == True  # noqa: E712 (puede contener NaN)
     _agregar_novedad(df, fuzzy, 'Dif. formato de factura')
     df['Tiene_Caracter_Especial'] = df['Tiene_Caracter_Especial'] | fuzzy
 
-    columnas_finales = list(COLUMNAS_DIAN_VS_CONT) + ['OTROS IMPUESTOS', 'Novedad', 'Detalle']
+    columnas_finales = list(COLUMNAS_DIAN_VS_CONT) + ['OTROS IMPUESTOS', 'Novedad', COL_ALERTAS, 'Detalle']
     return ResultadoConciliacion(
         df_completo=df,
         df_dian_vs_cont=df[columnas_finales],

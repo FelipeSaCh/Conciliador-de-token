@@ -2,11 +2,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from core.config import PERFIL_TRIBUTARIO_ACTIVO
 from core.errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, Reportador, logger
+from data import parametros_repo
 from data.autorretenedores_repo import GestorAutorretenedores
 from shared.dataframes import limpiar_encabezados, quitar_filas_vacias
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
 from services.conciliacion import preparacion as prep
+from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
 from services.conciliacion.escritura import escribir_resultados
 
@@ -14,7 +17,8 @@ from services.conciliacion.escritura import escribir_resultados
 class ConciliadorAuditoria(Reportador):
     def __init__(self, file_path, sheet_names, seriales_iva=None, seriales_base=None,
                  seriales_base2=None, seriales_ret=None, seriales_iva_dc=None,
-                 seriales_base_dc=None, seriales_base2_dc=None, filtro_grupo="Ambos", progress_callback=None):
+                 seriales_base_dc=None, seriales_base2_dc=None, filtro_grupo="Ambos", progress_callback=None,
+                 seriales_reteiva=None, perfil=None):
         self.file_path = Path(file_path)
         self.sheet_names = sheet_names
         self.progress_callback = progress_callback
@@ -22,6 +26,8 @@ class ConciliadorAuditoria(Reportador):
         self.seriales_base = seriales_base or []
         self.seriales_base2 = seriales_base2 or []
         self.seriales_ret = seriales_ret or []
+        self.seriales_reteiva = (seriales_reteiva or []) if PERFIL_TRIBUTARIO_ACTIVO else []
+        self.perfil = (perfil or {}) if PERFIL_TRIBUTARIO_ACTIVO else {}
         self.seriales_iva_dc = seriales_iva_dc or []
         self.seriales_base_dc = seriales_base_dc or []
         self.seriales_base2_dc = seriales_base2_dc or []
@@ -66,6 +72,33 @@ class ConciliadorAuditoria(Reportador):
             logger.warning(f"No se pudo leer la hoja de auditoría de devoluciones '{nombre}': {e}")
             return None
 
+    def _validar_retenciones(self, df_aud_comp, df_res_auditoria, df_autorretenedores):
+        if not self.seriales_ret:
+            self._reportar("Sin columnas de retefuente marcadas: se omite la validación de retención en la fuente.")
+        if not PERFIL_TRIBUTARIO_ACTIVO:
+            self._reportar("Validando retención en la fuente vs. autorretenedores...")
+        else:
+            if not self.seriales_reteiva:
+                self._reportar("Sin columnas de reteIVA marcadas: se omite la validación de reteIVA.")
+            self._reportar(f"Validando retenciones según perfil: {self.perfil.get('tipo') or 'sin definir'}...")
+        parametros = parametros_repo.cargar()
+        anio = max(parametros["uvt"])
+        desde, bases = parametros["bases"][-1]
+        valor_uvt = f"{parametros['uvt'][anio]:,.0f}".replace(",", ".")
+        self._reportar(f"  UVT {anio}: ${valor_uvt} | Vigencia desde {desde}: "
+                       + ", ".join(f"{c} {v:g}" for c, v in bases.items()) + " UVT")
+        res = alertas_retencion(
+            df_aud_comp, self.seriales_base, self.seriales_iva, self.seriales_ret, self.seriales_reteiva,
+            diccionario_autorretenedores(df_autorretenedores), self.perfil,
+        )
+        df_res_auditoria[res.columns] = res
+
+    def _reportar_alertas(self, alertas):
+        textos = alertas[alertas != ''].str.split(' / ').explode()
+        conteo = textos.str.replace(r'\s*\((?!art\.).*?\)', '', regex=True).value_counts()
+        for texto, cantidad in conteo.items():
+            self._reportar(f"  Alerta - {texto}: {cantidad}")
+
     def ejecutar(self):
         hojas = self._validar_archivo()
 
@@ -93,14 +126,17 @@ class ConciliadorAuditoria(Reportador):
         df_res_auditoria = prep.procesar_seriales(
             df_aud_comp, self.seriales_iva, self.seriales_base, self.seriales_base2, mapas_impuestos
         )
+        self._validar_retenciones(df_aud_comp, df_res_auditoria, df_autorretenedores)
 
         self._reportar("Unificando y conciliando DIAN vs Contabilidad...")
         res = unificar_dian_vs_cont(
             df_auditoria, df_aud_comp, df_res_auditoria, df_autorretenedores,
             df_aud_dc=df_aud_dc, seriales_iva_dc=self.seriales_iva_dc,
             seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc,
-            mapa_otros_imp=mapas_impuestos,
+            mapa_otros_imp=mapas_impuestos, perfil=self.perfil,
         )
+        self._reportar("Alertas tributarias detectadas:")
+        self._reportar_alertas(res.df_completo['Alertas'])
 
         self._reportar("Escribiendo resultados en el archivo Excel...")
         escribir_resultados(

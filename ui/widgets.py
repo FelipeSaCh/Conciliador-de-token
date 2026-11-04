@@ -1,7 +1,8 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
-from core.config import CATEGORIAS_EXCLUYENTES, CATEGORY_COLORS, PREFIJOS_CATEGORIAS, SERIALES_EXENTOS
+from core.config import CATEGORIAS_EXCLUYENTES, CATEGORY_COLORS
+from shared.cuentas import nombre_cuenta, pertenece_a_categoria
 from ui.theme import PALETTE, fuente, fuente_titulo
 
 
@@ -39,7 +40,12 @@ class _CanvasDesplazable(ttk.Frame):
             w = self.winfo_containing(event.x_root, event.y_root)
         except (KeyError, tk.TclError):
             return None
-        
+        while w is not None:
+            if w is self or self._cede_a(w):
+                return w
+            w = getattr(w, "master", None)
+        return None
+
     def _cede_a(self, widget):
         return False
 
@@ -112,11 +118,24 @@ def habilitar_boton(btn, habilitado):
 
 
 def leyenda_categorias(parent):
-    for etiqueta, clave in (("IVA", "iva"), ("Base", "base"), ("Base 2", "base2"), ("Autorretenedor", "autorretenedor")):
+    for etiqueta, clave in (("IVA", "iva"), ("Base", "base"), ("Base 2", "base2"), ("Retefuente", "autorretenedor"),
+                            ("ReteIVA", "reteiva")):
+        if clave not in CATEGORY_COLORS:
+            continue
         item = tk.Frame(parent, bg=PALETTE["surface"])
         item.pack(side=tk.LEFT, padx=(0, 18))
         tk.Frame(item, bg=CATEGORY_COLORS[clave], width=10, height=10).pack(side=tk.LEFT, padx=(0, 6))
         tk.Label(item, text=etiqueta, bg=PALETTE["surface"], fg=PALETTE["text_muted"], font=(fuente(), 9)).pack(side=tk.LEFT)
+
+
+def chip_info(parent, titulo, texto, bg=None):
+    """Ícono ⓘ que muestra una explicación al hacer clic."""
+    bg = bg or PALETTE["surface"]
+    chip = tk.Label(parent, text="ⓘ", bg=bg, fg=PALETTE["primary"], cursor="hand2", font=(fuente(), 11))
+    chip.bind("<Button-1>", lambda _e: messagebox.showinfo(titulo, texto, parent=chip.winfo_toplevel()))
+    chip.bind("<Enter>", lambda _e: chip.configure(fg=PALETTE["primary_hover"]))
+    chip.bind("<Leave>", lambda _e: chip.configure(fg=PALETTE["primary"]))
+    return chip
 
 
 def chip_toggle(parent, color, var):
@@ -132,11 +151,14 @@ def chip_toggle(parent, color, var):
 
 
 def categoria_inicial(columna, categoria):
+    return pertenece_a_categoria(columna, categoria)
+
+
+def etiqueta_serial(columna):
+    """Agrega el nombre PUC cuando el encabezado solo trae el código."""
     col = str(columna).strip()
-    if col.startswith(SERIALES_EXENTOS):
-        return False
-    prefijos = PREFIJOS_CATEGORIAS.get(categoria, ())
-    return col.startswith(prefijos) if prefijos else False
+    nombre = nombre_cuenta(col)
+    return f"{col}  ·  {nombre}" if nombre and not any(ch.isalpha() for ch in col) else col
 
 
 class SerialesChecklist(ttk.Frame):
@@ -178,7 +200,7 @@ class SerialesChecklist(ttk.Frame):
             fila = tk.Frame(self.lista.inner, bg=PALETTE["surface"])
             contenido = tk.Frame(fila, bg=PALETTE["surface"], padx=10, pady=7)
             contenido.pack(fill=tk.X)
-            lbl = tk.Label(contenido, text=col, bg=PALETTE["surface"], fg=PALETTE["text"],
+            lbl = tk.Label(contenido, text=etiqueta_serial(col), bg=PALETTE["surface"], fg=PALETTE["text"],
                            font=(fuente(), 10), anchor="w", width=55)
             lbl.pack(side=tk.LEFT, padx=(0, 24))
 
@@ -213,8 +235,10 @@ class SerialesChecklist(ttk.Frame):
             fila.pack_forget()
         visibles = 0
         for col in self._columnas:
-            if col in self._filas and termino in col.lower():
-                fila, contenido, lbl = self._filas[col]
+            if col not in self._filas:
+                continue
+            fila, contenido, lbl = self._filas[col]
+            if termino in str(lbl.cget("text")).lower():
                 fondo = PALETTE["surface"] if visibles % 2 == 0 else PALETTE["surface_alt"]
                 for w in (fila, contenido, lbl):
                     w.configure(bg=fondo)

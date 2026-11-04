@@ -79,7 +79,8 @@ def marcar_novedades_token(df, filtro_grupo):
     df = df[~(eliminar & sin_novedad)].reset_index(drop=True)
     personales = es_personal(df)
 
-    duplicados = mascara_duplicados(df['Num.Ext'])
+    col_nit = buscar_columna(df.columns, 'NIT Emisor')
+    duplicados = mascara_duplicados(df['Num.Ext'], df[col_nit] if col_nit else None)
     df.loc[duplicados & (df['Novedad'] == ''), 'Novedad'] = 'DIAN - DUPLICADO'
 
     mask_ignorar = contiene(df[col_doc], 'application response') if col_doc else pd.Series(False, index=df.index)
@@ -132,6 +133,7 @@ def preparar_dian(df_auditoria):
             df[col] = a_numero(df[col]).abs()
     df['Num.Ext_Original'] = df['Num.Ext'] if 'Num.Ext' in df.columns else ''
     df['Detalle'] = ''
+    df['Alertas'] = ''
     for col in COLUMNAS_DIAN_VS_CONT:
         if col not in df.columns:
             df[col] = ''
@@ -153,7 +155,11 @@ def preparar_contable(df_aud, df_res, prioridad, origen):
     df['Num.Ext_Clean'] = normalizar_num_ext(df['Num.Ext'])
     df['Tiene_Caracter_Especial'] = tiene_caracter_especial(df['Num.Ext_Original'])
 
-    duplicados = mascara_duplicados(df_aud['Num.Ext']) if 'Num.Ext' in df_aud.columns else False
+    col_nit = buscar_columna(df_aud.columns, 'Nit/C.C.', 'NIT')
+    duplicados = (
+        mascara_duplicados(df_aud['Num.Ext'], df_aud[col_nit] if col_nit else None)
+        if 'Num.Ext' in df_aud.columns else False
+    )
     df['Novedad'] = np.where(
         duplicados, f'{origen} - DUPLICADO',
         np.where(df['Num.Ext_Clean'] == '', f'{origen} - Sin Num.Ext', '')
@@ -164,6 +170,7 @@ def preparar_contable(df_aud, df_res, prioridad, origen):
     df['Nombre Emisor'] = columna_o_vacio(df_aud, 'Tercero')
     for col in ('BASE', 'BASE_2', 'IVA', *IMPUESTOS_ADICIONALES):
         df[col] = -a_numero(df_res[col]).abs()
+    df['Alertas'] = df_res['ALERTA'].fillna('').astype(str) if 'ALERTA' in df_res.columns else ''
     df['Prioridad_Fila'] = prioridad
 
     for col in COLUMNAS_DIAN_VS_CONT:

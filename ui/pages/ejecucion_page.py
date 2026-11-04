@@ -2,8 +2,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
-from core.config import LOG_FILE, OPTIONAL_SHEETS, SHEET_LABELS, SHEET_ORDER
+from core.config import LOG_FILE, OPTIONAL_SHEETS, PERFIL_TRIBUTARIO_ACTIVO, SHEET_LABELS, SHEET_ORDER
 from core.errors import ErrorUsuario, logger
+from data import perfiles_repo
 from services.conciliacion import ConciliadorAuditoria
 from services.reportes.acta_errores import GeneradorActaErrores
 from ui.dialogs import abrir_con_sistema
@@ -56,11 +57,13 @@ class EjecucionPage(Pagina):
         self.txt_log.delete("1.0", tk.END)
         self.txt_log.configure(state="disabled")
 
-    def _validar(self, filtro):
+    def _validar(self, filtro, perfil):
         if not self.app.file_path.get():
             raise ErrorUsuario("Primero debes seleccionar un archivo de Excel.")
         if not filtro:
             raise ErrorUsuario("Debes seleccionar qué grupo de documentos procesar (Solo Recibidos, Solo Emitidos o Ambos) en Configurar auditoría.")
+        if PERFIL_TRIBUTARIO_ACTIVO and not (perfil.get("tipo") and perfil.get("periodicidad")):
+            raise ErrorUsuario("Debes indicar el tipo de contribuyente y la periodicidad de IVA de la empresa en Configurar auditoría.")
         for clave in SHEET_ORDER:
             if clave in OPTIONAL_SHEETS:
                 continue
@@ -75,8 +78,9 @@ class EjecucionPage(Pagina):
             return
         config = self.app.paginas["config"]
         filtro = config.filtro_grupo.get()
+        perfil = config.obtener_perfil()
         try:
-            self._validar(filtro)
+            self._validar(filtro, perfil)
         except ErrorUsuario as e:
             logger.warning(f"Error de usuario al validar entradas: {e}")
             messagebox.showwarning("Datos incompletos", str(e))
@@ -89,6 +93,8 @@ class EjecucionPage(Pagina):
         if not messagebox.askyesno("Confirmar", "Este proceso modificará el archivo. ¿Deseas continuar?"):
             return
 
+        if PERFIL_TRIBUTARIO_ACTIVO:
+            perfiles_repo.guardar(perfil["nit"], perfil)
         self.ocupada = True
         habilitar_boton(self.btn_ejecutar, False)
         self.app.set_indicador(PALETTE["primary"])
@@ -98,7 +104,8 @@ class EjecucionPage(Pagina):
 
         conciliador = ConciliadorAuditoria(
             self.app.file_path.get(), {k: v.get().strip() for k, v in self.app.sheet_vars.items()},
-            seriales_iva=s["iva"], seriales_base=s["base"], seriales_base2=s["base2"],
+            seriales_iva=s["iva"], seriales_base=s["base"], seriales_base2=s["base2"], seriales_ret=s["ret"],
+            seriales_reteiva=s["reteiva"], perfil=perfil,
             seriales_iva_dc=s["iva_dc"], seriales_base_dc=s["base_dc"], seriales_base2_dc=s["base2_dc"],
             filtro_grupo=filtro, progress_callback=self.app.ejecutor.en_ui(self.agregar_log),
         )
