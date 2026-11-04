@@ -1,7 +1,7 @@
 """Emparejamiento DIAN vs Contabilidad vs Devoluciones y cálculo de diferencias."""
 import difflib
 from dataclasses import dataclass, field
-
+from shared.texto import limpiar_codigo, normalizar_nit, normalizar_num_ext
 import numpy as np
 import pandas as pd
 
@@ -214,7 +214,33 @@ def _marcar_diferencias_nit(df, mask_pairs):
             df.loc[invalidos + list(idx_dian), 'Diff_NIT'] = True
 
     _agregar_novedad(df, df['Diff_NIT'], 'No coincide tercero')
+def _emparejar_por_documento(df):
+    """CONT sin Num.Ext: Tipo de documento + CUFE/CUDE como Num.Ext contra huérfanos DIAN."""
+    mask_cont = (df['Prioridad_Fila'] == PRIORIDAD_CONT) & (df['Novedad'] == 'CONT - Sin Num.Ext')
+    mask_dian = (df['Prioridad_Fila'] == PRIORIDAD_DIAN) & df['Novedad'].isin(
+        ['DIAN - Sin Pareja en Contabilidad', 'DIAN - Sin Pareja en Contabilidad ni Devoluciones']
+    )
+    if not mask_cont.any() or not mask_dian.any():
+        return
 
+    dian_por_clave = {}
+    for d, clave in df.loc[mask_dian, 'Num.Ext_Clean'].astype(str).str.upper().items():
+        if clave:
+            dian_por_clave.setdefault(clave, []).append(d)
+
+    claves = normalizar_num_ext(
+        df.loc[mask_cont, 'Tipo de documento'].fillna('').astype(str).str.strip()
+        + df.loc[mask_cont, 'CUFE/CUDE'].fillna('').astype(str).str.strip()
+    ).str.upper()
+
+    for c, clave in claves.items():
+        libres = dian_por_clave.get(clave)
+        if not clave or not libres:
+            continue
+        d = libres.pop(0)
+        df.at[c, 'Num.Ext_Clean'] = df.at[d, 'Num.Ext_Clean']
+        df.loc[[d, c], 'Novedad'] = ''
+        df.loc[[d, c], 'Conteo_Pareja'] = 2
 
 def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorretenedores,
                           df_aud_dc=None, seriales_iva_dc=None, seriales_base_dc=None, seriales_base2_dc=None,
@@ -244,6 +270,8 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
         df, df_res_dc = conciliar_con_devoluciones(
             df, df_aud_dc, seriales_iva_dc, seriales_base_dc, seriales_base2_dc, mapa_otros_imp
         )
+
+    _emparejar_por_documento(df)
 
     df['NIT_Emisor_Clean'] = df['NIT Emisor'].map(normalizar_nit)
     df['NIT_Emisor_Group'] = df.groupby('Num.Ext_Clean')['NIT_Emisor_Clean'].transform('max')

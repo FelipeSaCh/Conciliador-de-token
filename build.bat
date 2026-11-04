@@ -22,7 +22,7 @@ echo Compilando version %VERSION%...
   --output-filename=Auditor.exe ^
   --output-dir=dist ^
   --remove-output ^
-  --company-name="Asesores Contables y Tributarios" ^
+  --company-name="Asesores Contables & Tributarios" ^
   --product-name="Auditor" ^
   --file-description="Conciliador DIAN vs Contabilidad" ^
   --product-version=%VERSION% ^

@@ -35,13 +35,11 @@ class _CanvasDesplazable(ttk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _contenedor_del_evento(self, event):
-        w = self.winfo_containing(event.x_root, event.y_root)
-        while w is not None and w is not self:
-            if self._cede_a(w):
-                return None
-            w = w.master
-        return w
-
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return None
+        
     def _cede_a(self, widget):
         return False
 

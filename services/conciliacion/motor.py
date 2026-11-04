@@ -99,7 +99,7 @@ class ConciliadorAuditoria(Reportador):
             df_auditoria, df_aud_comp, df_res_auditoria, df_autorretenedores,
             df_aud_dc=df_aud_dc, seriales_iva_dc=self.seriales_iva_dc,
             seriales_base_dc=self.seriales_base_dc, seriales_base2_dc=self.seriales_base2_dc,
-            mapas_impuestos=mapas_impuestos,
+            mapa_otros_imp=mapas_impuestos,
         )
 
         self._reportar("Escribiendo resultados en el archivo Excel...")
