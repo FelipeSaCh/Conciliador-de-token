@@ -7,12 +7,15 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table
 
+from core.config import COLUMNAS_OTROS_IMPUESTOS
 from core.errors import ColumnaFaltanteError, ErrorSistema, ErrorUsuario, HojaNoEncontradaError, Reportador, logger
 from shared.dataframes import buscar_columna, limpiar_encabezados
 from shared.excel_io import escritor_excel, hojas_de, leer_hoja_por_palabra_clave
 from shared.texto import limpiar_codigo, normalizar_ascii
+from shared.totales import agregar_fila_totales_ws, quitar_fila_totales
 
 COLUMNAS_CALCULADAS = ["CONCEPTO", "TERCERO", "TIPO", "TIPO-DETALLE", "BASE", "Num.Ext"]
+COLUMNAS_MONTO_TOKEN = {c.upper() for c in ("IVA", "Total", "BASE", *COLUMNAS_OTROS_IMPUESTOS)}
 COLUMNAS_OCULTAS = {'TIPO', 'TIPO-DETALLE', 'BASE', 'Num.Ext'}
 COLUMNAS_SOBRESCRIBIR = {'CONCEPTO', 'TERCERO', 'TIPO', 'TIPO-DETALLE', 'NIT_CRUCE'}
 
@@ -62,7 +65,7 @@ class FormateadorToken(Reportador):
 
         self._reportar("Cargando hoja principal (Token)...")
         try:
-            df_principal = limpiar_encabezados(pd.read_excel(self.file_path, sheet_name=nombre_principal))
+            df_principal = quitar_fila_totales(limpiar_encabezados(pd.read_excel(self.file_path, sheet_name=nombre_principal)))
             df_principal = df_principal.dropna(how="all").reset_index(drop=True)
             self._validar_columnas(df_principal, self.COLUMNAS_REQUERIDAS_PRINCIPAL, nombre_principal)
         except Exception as e:
@@ -191,7 +194,7 @@ class FormateadorToken(Reportador):
             tabla_info = self._info_tabla_existente(nombre_principal)
             n_cols = len(df_export.columns)
 
-            with escritor_excel(self.file_path) as writer:
+            with escritor_excel(self.file_path, hoja_activa=nombre_principal) as writer:
                 df_export.to_excel(writer, index=False, sheet_name=nombre_principal)
                 sheet = writer.sheets[nombre_principal]
 
@@ -227,6 +230,11 @@ class FormateadorToken(Reportador):
                     tabla.totalsRowCount = totals_rc
                     tabla.tableStyleInfo = style_info
                     sheet.add_table(tabla)
+
+                # Fila de totales de las columnas de valores (informativa: las lecturas del Token la descartan)
+                montos = [i for i, c in enumerate(df_export.columns, start=1)
+                          if str(c).strip().upper() in COLUMNAS_MONTO_TOKEN]
+                agregar_fila_totales_ws(sheet, montos, 2, len(df_export) + 1)
 
                 for idx, col_name in enumerate(df_export.columns, start=1):
                     letra = get_column_letter(idx)

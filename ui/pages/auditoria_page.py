@@ -14,7 +14,7 @@ from shared.excel_io import cargar_hoja_encabezado_variable
 from ui.pages.base import Pagina, asignar_hojas
 from ui.theme import PALETTE, fuente
 from ui.widgets import (
-    ScrollableTab, SerialesChecklist, boton_primario, boton_secundario, card, chip_info, encabezado_card,
+    SerialesChecklist, boton_primario, boton_secundario, card, chip_info, encabezado_card,
 )
 
 FILTROS_GRUPO = ["Solo Recibidos", "Solo Emitidos", "Ambos"]
@@ -25,9 +25,7 @@ class AuditoriaPage(Pagina):
     descripcion = "Relaciona las hojas del archivo y clasifica los seriales de IVA, base y autorretención."
 
     def construir(self):
-        scroll = ScrollableTab(self)
-        scroll.pack(fill=tk.BOTH, expand=True)
-        wrapper = ttk.Frame(scroll.inner, style="TFrame")
+        wrapper = ttk.Frame(self, style="TFrame")  # el desplazamiento lo da el contenedor de página (app)
         wrapper.pack(fill=tk.BOTH, expand=True)
         self.encabezado(wrapper)
 

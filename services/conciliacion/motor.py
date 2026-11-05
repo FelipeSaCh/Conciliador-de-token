@@ -8,6 +8,7 @@ from data import parametros_repo
 from data.autorretenedores_repo import GestorAutorretenedores
 from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_vacias
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
+from shared.totales import quitar_fila_totales
 from services.conciliacion import preparacion as prep
 from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
@@ -51,7 +52,7 @@ class ConciliadorAuditoria(Reportador):
 
     def _cargar_token(self):
         try:
-            df = pd.read_excel(self.file_path, sheet_name=self.sheet_names['principal'])
+            df = quitar_fila_totales(pd.read_excel(self.file_path, sheet_name=self.sheet_names['principal']))
             ultimo = df.dropna(how='all').index.max()
             if pd.notna(ultimo):
                 df = df.loc[:ultimo].copy()

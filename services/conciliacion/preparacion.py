@@ -5,6 +5,7 @@ import pandas as pd
 from core.config import COLUMNAS_DIAN_VS_CONT, IMPUESTOS_ADICIONALES, ORDEN
 from core.errors import ErrorUsuario
 from shared.dataframes import a_numero, buscar_columna, columna_o_vacio, contiene, quitar_filas_vacias, sumar_columnas
+from shared.totales import quitar_fila_totales
 from shared.texto import limpiar_codigo, mascara_duplicados, normalizar_num_ext, tiene_caracter_especial
 
 PRIORIDAD_DIAN, PRIORIDAD_CONT, PRIORIDAD_DEVOL = 1, 2, 3
@@ -14,18 +15,23 @@ def completar_columnas_token(df):
     if 'Prefijo' not in df.columns:
         df['Prefijo'] = ''
 
-    if 'Num.Ext' not in df.columns:
+    # Num.Ext y BASE se calculan si faltan o están vacíos (Token sin formatear con encabezados copiados)
+    num_ext = limpiar_codigo(df['Num.Ext']) if 'Num.Ext' in df.columns else pd.Series('', index=df.index)
+    if (num_ext == '').any():
         col_folio = buscar_columna(df.columns, 'FOLIO')
         if not col_folio:
             raise ErrorUsuario("La hoja de Token no contiene 'Num.Ext' ni la columna 'Folio' para construirlo.")
-        df['Num.Ext'] = limpiar_codigo(df['Prefijo'], strip=False) + limpiar_codigo(df[col_folio], strip=False)
+        calculado = limpiar_codigo(df['Prefijo'], strip=False) + limpiar_codigo(df[col_folio], strip=False)
+        df['Num.Ext'] = num_ext.where(num_ext != '', calculado)
 
-    if 'BASE' not in df.columns:
+    base = df['BASE'] if 'BASE' in df.columns else pd.Series(np.nan, index=df.index)
+    vacia = pd.to_numeric(base, errors='coerce').isna()
+    if vacia.any():
         if 'Total' in df.columns and 'IVA' in df.columns:
             total, iva = a_numero(df['Total']), a_numero(df['IVA'])
-            df['BASE'] = np.where(total == 0, 0, total - iva)
+            df['BASE'] = np.where(vacia, np.where(total == 0, 0, total - iva), base)
         else:
-            df['BASE'] = 0
+            df['BASE'] = np.where(vacia, 0, base)
 
     if 'CONCEPTO' not in df.columns:
         df['CONCEPTO'] = ''
@@ -106,6 +112,7 @@ def construir_auditoria(df):
 
 def limpiar_hoja_auditoria(df):
     """Quita filas fantasma evaluando las 6 primeras columnas de AUD-COMP / devoluciones."""
+    df = quitar_fila_totales(df)
     return quitar_filas_vacias(df, df.columns[:6]).copy() if len(df.columns) >= 6 else df
 
 
@@ -166,7 +173,7 @@ def preparar_contable(df_aud, df_res, prioridad, origen):
     )
 
     df['Fecha'] = columna_o_vacio(df_aud, 'Fecha')
-    df['NIT Emisor'] = columna_o_vacio(df_aud, 'Nit/C.C.')
+    df['NIT Emisor'] = df_aud[col_nit] if col_nit else ''
     df['Nombre Emisor'] = columna_o_vacio(df_aud, 'Tercero')
     for col in ('BASE', 'BASE_2', 'IVA', *IMPUESTOS_ADICIONALES):
         df[col] = -a_numero(df_res[col]).abs()

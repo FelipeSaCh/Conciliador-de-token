@@ -54,6 +54,79 @@ class _CanvasDesplazable(ttk.Frame):
             _desplazar(self.canvas, event)
 
 
+class PaginaDesplazable(tk.Frame):
+    """Contenedor de página que se adapta a la ventana: llena el espacio disponible y, si el contenido no cabe
+    (pantallas pequeñas o ventana reducida), muestra barras de desplazamiento vertical/horizontal.
+
+    La rueda del mouse desplaza la página salvo sobre widgets con desplazamiento propio (listas, tablas, consola).
+    """
+
+    CON_SCROLL_PROPIO = (tk.Text, tk.Listbox, ttk.Treeview)
+
+    def __init__(self, parent, bg=None, horizontal=True):
+        bg = bg or PALETTE["bg"]
+        self._horizontal = horizontal
+        super().__init__(parent, bg=bg)
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, width=1, height=1)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self._sy = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self._sx = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self._sy.grid(row=0, column=1, sticky="ns")
+        self._sx.grid(row=1, column=0, sticky="ew")
+        self._sy.grid_remove()
+        self._sx.grid_remove()
+        self.canvas.configure(yscrollcommand=self._sy.set, xscrollcommand=self._sx.set)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self._ventana = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", self._ajustar, add="+")
+        self.canvas.bind("<Configure>", self._ajustar, add="+")
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.canvas.bind_all(seq, self._rueda, add="+")
+        self.canvas.bind_all("<Shift-MouseWheel>", lambda e: self._rueda(e, horizontal=True), add="+")
+
+    def _ajustar(self, _e=None):
+        req_w, req_h = self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()
+        vis_w, vis_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if vis_w <= 1 or vis_h <= 1:
+            return
+        if not self._horizontal:
+            req_w = vis_w
+        ancho, alto = max(req_w, vis_w), max(req_h, vis_h)
+        self.canvas.itemconfigure(self._ventana, width=ancho, height=alto)
+        self.canvas.configure(scrollregion=(0, 0, ancho, alto))
+        for barra, sobra in ((self._sy, req_h > vis_h), (self._sx, req_w > vis_w)):
+            if sobra and not barra.winfo_ismapped():
+                barra.grid()
+            elif not sobra and barra.winfo_ismapped():
+                barra.grid_remove()
+        if req_h <= vis_h:
+            self.canvas.yview_moveto(0)
+        if req_w <= vis_w:
+            self.canvas.xview_moveto(0)
+
+    def _rueda(self, event, horizontal=False):
+        barra = self._sx if horizontal else self._sy
+        if not self.winfo_ismapped() or not barra.winfo_ismapped():
+            return
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
+        while w is not None and w is not self:
+            if isinstance(w, self.CON_SCROLL_PROPIO) or (isinstance(w, tk.Canvas) and w is not self.canvas):
+                return
+            w = getattr(w, "master", None)
+        if w is not self:
+            return
+        if horizontal:
+            num = getattr(event, "num", None)
+            self.canvas.xview_scroll(-3 if num == 4 else 3 if num == 5 else int(-1 * (event.delta / 120) * 3), "units")
+        else:
+            _desplazar(self.canvas, event)
+
+
 class ScrollableTab(_CanvasDesplazable):
     def __init__(self, parent, **kwargs):
         super().__init__(parent, PALETTE["bg"], "TFrame", **kwargs)

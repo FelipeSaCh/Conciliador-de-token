@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from core.config import (
-    CONCEPTOS_ESTRICTOS,
+    COMENTARIOS_NO_SUJETOS, CONCEPTOS_ESTRICTOS, PATRON_IMPUESTO_EN_COSTO,
     TARIFA_MAXIMA_IVA, TARIFA_MAXIMA_RETENCION, TARIFA_RETEIVA, TIPOS_CONTRIBUYENTE, TOLERANCIA_RELATIVA,
     TOLERANCIA_TARIFA_RETENCION, UMBRAL_TOLERANCIA,
 )
@@ -120,6 +120,11 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
 
     valores_base = df_aud[cols_base].apply(pd.to_numeric, errors='coerce').fillna(0).abs()
     base = valores_base.sum(axis=1)
+    # Base de retención: sin impuestos llevados al costo (consumo, saludables, IVA mayor valor): no son ingreso del proveedor
+    cols_impuesto = [c for c in cols_base if re.search(PATRON_IMPUESTO_EN_COSTO, str(c), re.I)]
+    base_ret = base - valores_base[cols_impuesto].sum(axis=1) if cols_impuesto else base
+    texto_base = base_ret.map(_pesos) + np.where(base_ret < base - UMBRAL_TOLERANCIA,
+                                                 ' (sin ' + (base - base_ret).map(_pesos) + ' de impuestos en el costo)', '')
     conceptos = parametros_repo.cargar_conceptos()
     concepto_gasto = valores_base.idxmax(axis=1).map(lambda c: _concepto_cuenta(c, conceptos['gasto']))
 
@@ -147,35 +152,50 @@ def alertas_retencion(df_aud, seriales_base, seriales_iva, seriales_ret, seriale
     historial = concepto_ret[con_concepto].groupby(nit[con_concepto]).agg(lambda s: s.mode().iat[0])
     concepto = concepto_ret.where(con_concepto, nit.map(historial)).fillna(concepto_gasto)
     concepto = concepto.where(concepto != '', concepto_gasto)
+    origen = pd.Series(np.where(con_concepto, 'cuenta de retención',
+                                np.where(nit.isin(historial.index), 'historial del tercero', 'cuenta de gasto')), index=idx)
 
     parametros = parametros_repo.cargar()
     alta = [_base_minima(f, 'compras' if c == 'mixto' else c, parametros) for f, c in zip(fecha, concepto)]
     baja = [_base_minima(f, 'servicios' if c == 'mixto' else c, parametros) for f, c in zip(fecha, concepto)]
     base_alta, criterio_alta = (pd.Series(v, index=idx) for v in zip(*alta))
     base_baja, criterio_baja = (pd.Series(v, index=idx) for v in zip(*baja))
-    supera = base >= base_alta
+    supera = base_ret >= base_alta
     simple = tipo.str.contains('SIMPLE', na=False) | comentario.str.contains('SIMPLE', na=False)
     agente_rf, agente_iva = agentes_retencion(perfil)
 
     if seriales_ret:
         con_ret = retencion > UMBRAL_TOLERANCIA
         if agente_rf:
-            no_sujeto = nit.isin(dict_auto.keys()) | simple
-            agregar_alerta(alertas, con_base & ~no_sujeto & supera & ~con_ret,
-                           'Sin retención: no autorretenedor supera base mínima (' + criterio_alta + ')')
-            agregar_alerta(alertas, con_base & no_sujeto & con_ret, 'Retención practicada a autorretenedor/no sujeto')
-            agregar_alerta(alertas, con_base & ~no_sujeto & (base < base_baja) & con_ret,
-                           'Retención bajo base mínima (' + criterio_baja + ')')
+            exime = comentario.map(lambda c: any(k in c for k in COMENTARIOS_NO_SUJETOS))
+            no_sujeto = (nit.isin(dict_auto.keys()) & exime) | simple
+            observado = nit.isin(dict_auto.keys()) & ~exime & (comentario != '')
+            retuvo_antes = nit.isin(set(nit[con_ret & con_base])) & (nit != '')
+            agregar_alerta(alertas, con_base & ~no_sujeto & ~observado & supera & ~con_ret,
+                           'Sin retención: base ' + texto_base + ' supera mínimo de ' + criterio_alta
+                           + ' [concepto por ' + origen + ']'
+                           + np.where(retuvo_antes, '; a este tercero sí se le retuvo en otros comprobantes', ''))
+            agregar_alerta(alertas, con_base & no_sujeto & con_ret,
+                           'Retención de ' + retencion.map(_pesos) + ' practicada a no sujeto ('
+                           + np.where(simple & ~nit.isin(dict_auto.keys()), 'RÉGIMEN SIMPLE', comentario) + ')')
+            agregar_alerta(alertas, con_base & observado,
+                           'Tercero con observación en listado de autorretenedores: ' + comentario
+                           + (' (retención ' + retencion.map(_pesos) + ')').where(con_ret, ' (sin retención)'))
+            agregar_alerta(alertas, con_base & ~no_sujeto & (base_ret < base_baja) & con_ret,
+                           'Retención de ' + retencion.map(_pesos) + ' con base ' + texto_base + ' bajo mínimo de '
+                           + criterio_baja + ' [concepto por ' + origen + ']')
 
             esperada = col_ret.map(lambda c: _tarifa_cuenta(c) if isinstance(c, str) else np.nan).astype(float)
-            desvio = (retencion - base * esperada).abs() > np.maximum(UMBRAL_TOLERANCIA, base * esperada * TOLERANCIA_TARIFA_RETENCION)
+            desvio = (retencion - base_ret * esperada).abs() > np.maximum(UMBRAL_TOLERANCIA, base_ret * esperada * TOLERANCIA_TARIFA_RETENCION)
             con_tarifa = con_base & con_ret & unica & esperada.notna()
             texto_tarifa = ('Tarifa aplicada distinta a la de la cuenta (aplicada '
-                            + (retencion / base.replace(0, np.nan)).map(lambda v: _porcentaje(v) if pd.notna(v) else '')
-                            + ' vs ' + esperada.map(lambda v: _porcentaje(v) if pd.notna(v) else '') + ')')
+                            + (retencion / base_ret.replace(0, np.nan)).map(lambda v: _porcentaje(v) if pd.notna(v) else '')
+                            + ' vs ' + esperada.map(lambda v: _porcentaje(v) if pd.notna(v) else '')
+                            + ' sobre base ' + texto_base + ')')
             agregar_alerta(alertas, con_tarifa & desvio, texto_tarifa)
-            agregar_alerta(alertas, con_base & con_ret & ~(con_tarifa) & (retencion > base * TARIFA_MAXIMA_RETENCION + UMBRAL_TOLERANCIA),
-                           'Tarifa de retención atípica')
+            agregar_alerta(alertas, con_base & con_ret & ~(con_tarifa) & (retencion > base_ret * TARIFA_MAXIMA_RETENCION + UMBRAL_TOLERANCIA),
+                           'Tarifa de retención atípica (' + (retencion / base_ret.replace(0, np.nan)).map(
+                               lambda v: _porcentaje(v) if pd.notna(v) else '') + ' sobre base ' + texto_base + ')')
 
             cruce = con_ret & con_concepto & (concepto_gasto != 'mixto') & (concepto_ret != concepto_gasto) & (
                 concepto_ret.isin(CONCEPTOS_ESTRICTOS) | concepto_gasto.isin(CONCEPTOS_ESTRICTOS))
@@ -244,7 +264,10 @@ def alertas_conciliacion(df, prioridad_dian, prioridad_cont, mask_pairs, perfil=
     total_dian = por_grupo(a_numero(df['Total']).abs().where(es_dian, 0), 'sum')
     otros_dian = por_grupo(a_numero(df['OTROS IMPUESTOS']).abs().where(es_dian, 0), 'sum')
     total_cont = por_grupo((base + a_numero(df['BASE_2']).abs() + iva).where(contable, 0), 'sum')
-    descuadre = (total_dian - total_cont - otros_dian).abs() > tolerancia(total_dian)
+    # La BASE DIAN (Total - IVA) ya incluye los otros impuestos de la factura: el total cuadra si coincide con lo
+    # contabilizado, o con lo contabilizado más los otros impuestos (cuando estos se registraron aparte y sin marcar)
+    tol_total = tolerancia(total_dian)
+    descuadre = ((total_dian - total_cont).abs() > tol_total) & ((total_dian - total_cont - otros_dian).abs() > tol_total)
     agregar_alerta(alertas, mask_pairs & (df['Box_Color'] == 'BLACK') & (total_dian > 0) & descuadre,
                    'Total DIAN no cuadra (BASE_2 u otros impuestos)')
 
@@ -267,3 +290,44 @@ def alertas_conciliacion(df, prioridad_dian, prioridad_cont, mask_pairs, perfil=
                              | novedad.str.contains('CONT - Sin Num.Ext', regex=False))
     agregar_alerta(alertas, sin_soporte, 'Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)')
     return alertas
+
+# Texto con que empieza (o que contiene) cada alerta -> nombre en GUIA_ALERTAS
+_FIRMAS_ALERTA = (
+    (r'^Sin retención:', 'Sin retención'),
+    (r'practicada a no sujeto', 'Retención practicada a no sujeto'),
+    (r'^Tercero con observación', 'Tercero con observación en listado de autorretenedores'),
+    (r'bajo mínimo', 'Retención con base bajo el mínimo'),
+    (r'^Tarifa aplicada distinta', 'Tarifa aplicada distinta a la de la cuenta'),
+    (r'^Tarifa de retención atípica', 'Tarifa de retención atípica'),
+    (r'^Cuenta de retención no corresponde', 'Cuenta de retención no corresponde al gasto'),
+    (r'^IVA sin base gravada', 'IVA sin base gravada'),
+    (r'^Factura rechazada', 'Factura rechazada en DIAN'),
+    (r'^Nota crédito DIAN cruzada', 'Nota crédito DIAN cruzada contra compras'),
+    (r'^Factura a nombre de otro adquirente', 'Factura a nombre de otro adquirente (art. 771-2 E.T.)'),
+    (r'^IVA supera el 19', 'IVA supera el 19 % de la base'),
+    (r'^Total DIAN no cuadra', 'Total DIAN no cuadra (BASE_2 u otros impuestos)'),
+    (r'^Contabilizada antes', 'Contabilizada antes de la emisión'),
+    (r'^Contabilizada en año distinto', 'Contabilizada en año distinto a la emisión'),
+    (r'^Sin factura/documento soporte', 'Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)'),
+    (r'^IVA descontable en empresa no responsable', 'IVA descontable en empresa no responsable de IVA'),
+    (r'^IVA descontable fuera del término', 'IVA descontable fuera del término (art. 496 E.T.)'),
+    (r'^Retención practicada sin ser agente', 'Retención practicada sin ser agente de retención'),
+    (r'^Sin reteIVA', 'Sin reteIVA: agente de IVA y proveedor con IVA'),
+    (r'^ReteIVA distinta', 'ReteIVA distinta al 15 % del IVA'),
+    (r'^ReteIVA practicada sin ser agente', 'ReteIVA practicada sin ser agente de retención de IVA'),
+)
+
+
+def tipo_alerta(texto):
+    """Nombre de la alerta en GUIA_ALERTAS para un texto de alerta (con valores); '' si no se reconoce."""
+    return next((nombre for patron, nombre in _FIRMAS_ALERTA if re.search(patron, str(texto))), '')
+
+
+def explicacion_alerta(nombre):
+    """(sección, cuándo aparece, qué significa) de la guía para el nombre de alerta."""
+    from core.config import GUIA_ALERTAS
+    for seccion, _, alertas in GUIA_ALERTAS:
+        for alerta, cuando, significa in alertas:
+            if alerta == nombre:
+                return seccion, cuando, significa
+    return '', '', ''

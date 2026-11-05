@@ -644,3 +644,36 @@ def configurar_conceptos_retencion(parent):
     entrada.bind("<Return>", lambda _e: asignar("gasto"))
     refrescar_listas()
     return bool(dlg.mostrar())
+
+# ============================================================== guía de alertas
+def mostrar_guia_alertas(parent):
+    """Explica cada alerta tributaria: cuándo aparece y qué significa."""
+    from core.config import GUIA_ALERTAS, PERFIL_TRIBUTARIO_ACTIVO
+
+    dlg = Dialogo(parent, "Guía de alertas tributarias", ancho=820, alto=640, min_ancho=560)
+    marco = dlg.cuerpo
+    ancho_texto = 740
+    ttk.Label(marco, text="Las alertas no cambian la conciliación: señalan casos para revisar. Aparecen en la columna "
+                          "ALERTA de AUD-COMP y Alertas de DIAN VS CONT; si hay varias se separan con \" / \". "
+                          "Diferencias menores a $50 o al 0,1 % del valor se ignoran.",
+              wraplength=ancho_texto, justify="left").pack(anchor="w", pady=(0, 10))
+
+    for seccion, nota, alertas in GUIA_ALERTAS:
+        if seccion.startswith("Perfil tributario") and PERFIL_TRIBUTARIO_ACTIVO:
+            seccion = "Perfil tributario"
+        ttk.Label(marco, text=seccion, font=("", 11, "bold"), foreground=PALETTE["primary"]).pack(anchor="w", pady=(12, 2))
+        if nota:
+            ttk.Label(marco, text=nota, wraplength=ancho_texto, justify="left",
+                      foreground=PALETTE["text_muted"]).pack(anchor="w", pady=(0, 4))
+        for alerta, cuando, significa in alertas:
+            bloque = ttk.Frame(marco)
+            bloque.pack(fill="x", pady=(6, 0), padx=(8, 0))
+            ttk.Label(bloque, text=f"• {alerta}", font=("", 10, "bold"), wraplength=ancho_texto,
+                      justify="left").pack(anchor="w")
+            ttk.Label(bloque, text=f"Cuándo aparece: {cuando}", wraplength=ancho_texto - 16,
+                      justify="left").pack(anchor="w", padx=(14, 0))
+            ttk.Label(bloque, text=f"Qué significa: {significa}", wraplength=ancho_texto - 16,
+                      justify="left").pack(anchor="w", padx=(14, 0))
+
+    dlg.boton("Cerrar", dlg.cerrar, principal=True)
+    return dlg.mostrar()

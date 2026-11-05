@@ -13,6 +13,7 @@ from core.errors import ErrorSistema, ErrorUsuario
 from services.conciliacion.alertas import COL_ALERTAS, diccionario_autorretenedores
 from shared.excel_io import escritor_excel
 from shared.texto import VALORES_NULOS
+from shared.totales import agregar_fila_totales_ws, quitar_filas_totales_ws
 
 COLUMNAS_INYECTADAS = [
     ('AUTORRETENCION', 'auto', "cc99ff", None),
@@ -74,6 +75,39 @@ def _indice(df, columna):
     return df.columns.get_loc(columna) + 1 if columna in df.columns else None
 
 
+COLOR_AUTORRETENEDOR = "cab8db"
+FILL_AUTORRETENEDOR = _fill(COLOR_AUTORRETENEDOR)
+LADO_GRUPO = Side(style='medium', color='000000')
+FORMATO_MONTO = '#,##0.00'
+
+
+def _limpiar_marcas_grupo(ws, fila_ini, fila_fin, max_col):
+    """Quita relleno y recuadro de autorretenedores de una ejecución anterior (respeta el resto del formato)."""
+    for fila in ws.iter_rows(min_row=fila_ini, max_row=fila_fin, max_col=max_col):
+        for celda in fila:
+            if str(celda.fill.fgColor.rgb or '').upper().endswith(COLOR_AUTORRETENEDOR):
+                celda.fill = PatternFill(fill_type=None)
+            b = celda.border
+            lados = {k: getattr(b, k) for k in ('left', 'right', 'top', 'bottom')}
+            if any(l is not None and l.style == 'medium' and str(l.color.rgb if l.color else '').endswith('000000')
+                   for l in lados.values()):
+                celda.border = Border(**{k: (None if (l is not None and l.style == 'medium') else l) for k, l in lados.items()},
+                                      diagonal=b.diagonal)
+
+
+def _marcar_grupo(ws, fila_ini, fila_fin, max_col):
+    """Fondo #a984cf y recuadro negro alrededor del bloque de filas (fila_ini..fila_fin)."""
+    for r in range(fila_ini, fila_fin + 1):
+        for c in range(1, max_col + 1):
+            celda = ws.cell(row=r, column=c)
+            celda.fill = FILL_AUTORRETENEDOR
+            b = celda.border
+            celda.border = Border(
+                left=LADO_GRUPO if c == 1 else b.left, right=LADO_GRUPO if c == max_col else b.right,
+                top=LADO_GRUPO if r == fila_ini else b.top, bottom=LADO_GRUPO if r == fila_fin else b.bottom,
+            )
+
+
 def _clave_orden_auditoria(row):
     """Autorretenedores → régimen simple/comentados → resto; FC, otros, DC (agrupado por tercero); base desc."""
     auto = row['auto'].upper().strip()
@@ -107,6 +141,7 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
         return
 
     encabezado = lambda c: str(ws.cell(row=header_row, column=c).value).strip().upper()
+    quitar_filas_totales_ws(ws, header_row)
 
     # Limpia columnas inyectadas en una ejecución previa
     col_detalle = next((c for c in range(1, ws.max_column + 1) if encabezado(c) == 'DETALLE'), 0)
@@ -183,7 +218,31 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
             elif clave == 'alerta' and fila[clave]:
                 celda.fill = FILL_ALERTA
         for c in range(idx_insert, len(orig) + 1):
-            ws.cell(row=r, column=c + n_iny).value = orig[c - 1]
+            celda = ws.cell(row=r, column=c + n_iny)
+            celda.value = orig[c - 1]
+            if isinstance(celda.value, (int, float)) and celda.number_format == 'General' \
+                    and re.match(r'\d', str(ws.cell(row=header_row, column=c + n_iny).value or '')):
+                celda.number_format = FORMATO_MONTO
+
+    max_col = ws.max_column
+    fila_ini, fila_fin = header_row + 1, header_row + len(filas)
+    _limpiar_marcas_grupo(ws, fila_ini, ws.max_row, max_col)
+
+    # Proveedores registrados en Autorretenedores (quedan arriba por el orden): fondo y recuadro por bloque contiguo
+    inicio = None
+    for i, fila in enumerate(filas + [{'auto': ''}]):
+        con_registro = bool(str(fila.get('auto', '')).strip())
+        if con_registro and inicio is None:
+            inicio = i
+        elif not con_registro and inicio is not None:
+            _marcar_grupo(ws, fila_ini + inicio, fila_ini + i - 1, max_col)
+            inicio = None
+
+    # Fila de totales (informativa: la conciliación la descarta al leer)
+    montos = [idx_insert + k for k, (_, _, _, formato) in enumerate(COLUMNAS_INYECTADAS) if formato]
+    montos += [c for c in range(idx_insert + n_iny, max_col + 1)
+               if re.match(r'\d', str(ws.cell(row=header_row, column=c).value or ''))]
+    agregar_fila_totales_ws(ws, montos, fila_ini, fila_fin)
 
 
 def _formato_numerico(hojas_df):
@@ -341,7 +400,7 @@ def _ajustar_anchos(ws, df):
 def escribir_resultados(file_path, sheet_names, nombre_dc, df_resultado, df_auditoria, df_res_auditoria,
                         df_autorretenedores, res):
     try:
-        with escritor_excel(file_path) as writer:
+        with escritor_excel(file_path, hoja_activa='DIAN VS CONT') as writer:
             df = res.df_dian_vs_cont
             df_resultado.to_excel(writer, index=False, sheet_name='Resultados')
             df_auditoria.to_excel(writer, index=False, sheet_name='auditoria')

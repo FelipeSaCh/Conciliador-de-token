@@ -15,10 +15,10 @@ from ui.pages.movimientos_page import MovimientosPage
 from ui.pages.preview_page import PreviewPage
 from ui.pages.token_page import TokenPage
 from ui.theme import PALETTE, aplicar_icono, configurar_estilos, fuente, fuente_titulo
-from ui.widgets import boton_secundario
+from ui.widgets import PaginaDesplazable, boton_secundario
 from ui.worker import EjecutorSegundoPlano
 
-URL_GUIA_AUDITOR = "https://drive.google.com/file/d/1v3588agUQlwzUIutPHNuvzRCChFl1pRb/view?usp=sharing"  # TODO: enlace a la Guía del auditor
+# URL_GUIA_AUDITOR = "https://..."  # TODO: enlace a la Guía del auditor
 
 # (sección, [(id, texto del menú, clase de página o URL a abrir)]) en el orden del menú lateral
 NAVEGACION = [
@@ -35,9 +35,9 @@ NAVEGACION = [
         ("preview", "Vista previa", PreviewPage),
         ("autorretenedores", "Autorretenedores", AutorretenedoresPage),
     ]),
-     ("Ayuda", [
-         ("guia", "Guía del auditor", URL_GUIA_AUDITOR),
-     ]),
+    # ("Ayuda", [
+    #     ("guia", "Guía del auditor", URL_GUIA_AUDITOR),
+    # ]),
 ]
 PAGINA_INICIAL = "config"
 
@@ -49,7 +49,7 @@ class ConciliadorApp(tk.Tk):
         self.configure(bg=PALETTE["bg"])
         self.title(f"{APP_NAME} - v{APP_VERSION}")
         self.state("zoomed")
-        self.minsize(980, 600)
+        self.minsize(640, 420)
         aplicar_icono(self)
 
         self.ejecutor = EjecutorSegundoPlano(self)
@@ -57,6 +57,7 @@ class ConciliadorApp(tk.Tk):
         self.sheet_vars = {clave: tk.StringVar(value=nombre) for clave, nombre in DEFAULT_SHEET_NAMES.items()}
         self.hojas_disponibles = []
         self.paginas = {}
+        self.marcos = {}
         self.nav_buttons = {}
         self.current_page = None
         self.protocol("WM_DELETE_WINDOW", self._cerrar)
@@ -78,7 +79,10 @@ class ConciliadorApp(tk.Tk):
         for _, items in NAVEGACION:
             for page_id, _, clase in items:
                 if not isinstance(clase, str):
-                    self.paginas[page_id] = clase(contenedor, self)
+                    marco = PaginaDesplazable(contenedor)
+                    pagina = clase(marco.inner, self)
+                    pagina.pack(fill=tk.BOTH, expand=True)
+                    self.marcos[page_id], self.paginas[page_id] = marco, pagina
 
         self._construir_barra_estado()
         self.show_page(PAGINA_INICIAL)
@@ -88,8 +92,15 @@ class ConciliadorApp(tk.Tk):
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
         self.sidebar.pack_propagate(False)
         tk.Frame(parent, bg=PALETTE["border"], width=1).pack(side=tk.LEFT, fill=tk.Y)
+        tk.Button(self.sidebar, text="⟳  Actualizar", bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"],
+                  activebackground=PALETTE["sidebar_hover"], activeforeground=PALETTE["text"],
+                  font=(fuente(), 10), bd=0, relief="flat", highlightthickness=0, anchor="w",
+                  padx=26, pady=9, cursor="hand2", command=self._on_actualizar).pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 16))
+        desplazable = PaginaDesplazable(self.sidebar, bg=PALETTE["sidebar_bg"], horizontal=False)
+        desplazable.pack(fill=tk.BOTH, expand=True)
+        self.sidebar_items = desplazable.inner
 
-        cabecera = tk.Frame(self.sidebar, bg=PALETTE["sidebar_bg"])
+        cabecera = tk.Frame(self.sidebar_items, bg=PALETTE["sidebar_bg"])
         cabecera.pack(fill=tk.X, pady=(28, 12))
         tk.Label(cabecera, text=APP_NAME, bg=PALETTE["sidebar_bg"], fg=PALETTE["text"], font=fuente_titulo(13),
                  anchor="w", justify="left", wraplength=190).pack(fill=tk.X, padx=24)
@@ -97,16 +108,13 @@ class ConciliadorApp(tk.Tk):
                  font=(fuente(), 9), anchor="w").pack(fill=tk.X, padx=24, pady=(2, 0))
 
         for seccion, items in NAVEGACION:
-            tk.Label(self.sidebar, text=seccion.upper(), bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_section"],
+            tk.Label(self.sidebar_items, text=seccion.upper(), bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_section"],
                      font=(fuente(), 8, "bold"), anchor="w").pack(fill=tk.X, padx=28, pady=(18, 6))
             for page_id, texto, destino in items:
                 self._boton_nav(page_id, texto, destino if isinstance(destino, str) else None)
-        tk.Button(self.sidebar, text="⟳  Actualizar", bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"],
-                  activebackground=PALETTE["sidebar_hover"], activeforeground=PALETTE["text"],
-                  font=(fuente(), 10), bd=0, relief="flat", highlightthickness=0, anchor="w",
-                  padx=26, pady=9, cursor="hand2", command=self._on_actualizar).pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 16))
+
     def _boton_nav(self, page_id, texto, url=None):
-        fila = tk.Frame(self.sidebar, bg=PALETTE["sidebar_bg"])
+        fila = tk.Frame(self.sidebar_items, bg=PALETTE["sidebar_bg"])
         fila.pack(fill=tk.X, padx=12, pady=1)
         indicador = tk.Frame(fila, bg=PALETTE["sidebar_bg"], width=3)
         indicador.pack(side=tk.LEFT, fill=tk.Y)
@@ -130,9 +138,9 @@ class ConciliadorApp(tk.Tk):
 
     def show_page(self, page_id):
         if self.current_page:
-            self.paginas[self.current_page].pack_forget()
+            self.marcos[self.current_page].pack_forget()
             self._estilo_nav(self.current_page, "normal")
-        self.paginas[page_id].pack(fill=tk.BOTH, expand=True)
+        self.marcos[page_id].pack(fill=tk.BOTH, expand=True)
         self._estilo_nav(page_id, "activo")
         self.current_page = page_id
 
@@ -142,11 +150,12 @@ class ConciliadorApp(tk.Tk):
         tarjeta.pack(fill=tk.X, padx=28, pady=(24, 0))
         fila = ttk.Frame(tarjeta, style="Card.TFrame", padding=(20, 12))
         fila.pack(fill=tk.BOTH)
+        # Botones primero (a la derecha): en ventanas angostas se encoge el campo, no se ocultan los botones
+        boton_secundario(fila, "Liberar", self._on_liberar_archivo).pack(side=tk.RIGHT, padx=(8, 0))
+        boton_secundario(fila, "Seleccionar…", self._on_abrir_archivo).pack(side=tk.RIGHT)
         ttk.Label(fila, text="Archivo de trabajo", style="FieldLabelOptional.TLabel").pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Entry(fila, textvariable=self.file_path, state="readonly", font=(fuente(), 10)).pack(
+        ttk.Entry(fila, textvariable=self.file_path, state="readonly", font=(fuente(), 10), width=8).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
-        boton_secundario(fila, "Seleccionar…", self._on_abrir_archivo).pack(side=tk.LEFT)
-        boton_secundario(fila, "Liberar", self._on_liberar_archivo).pack(side=tk.LEFT, padx=(8, 0))
 
     def _construir_barra_estado(self):
         barra = tk.Frame(self.content_frame, bg=PALETTE["surface"])

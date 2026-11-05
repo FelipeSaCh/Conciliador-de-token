@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE, Cell
-from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -16,6 +15,7 @@ from core.errors import ErrorSistema, ErrorUsuario, Reportador, logger
 from shared.cuentas import nombre_cuenta, ordenar_por_prefijos
 from shared.excel_io import escritor_excel, leer_excel
 from shared.texto import clave_columna, limpiar_codigo
+from shared.totales import MARCA_TOTALES, agregar_fila_totales_ws
 from shared.xlsx_rapido import LibroXlsx, texto_xml
 
 MESES_CORTOS = {i: m for i, m in enumerate(
@@ -29,7 +29,7 @@ RENOMBRES = {
 }
 COLUMNAS_DESCARTADAS = ["CHEQ.NO", "ELABORO", "SUC.PTO", "CCOSTO", "SCCOSTO", "REF1", "REF2", "REF3", "REF4",
                         "No. AUTORIZACION(DATAFONO)"]
-ORDEN_INDICE = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DETALLE", "DOCRELA", "NIT"]
+ORDEN_INDICE = ["Tipo", "Número", "Num.Ext", "Fecha", "Tercero", "DETALLE", "DOCRELA", "Nit/C.C."]
 PRIORIDAD_CUENTAS = ('2365', '2367', '2368', '15', '6', '5', '22')
 PRIORIDAD_DETALLE = ('6', '5', '7', '15')
 TIPOS_AL_FINAL = ('GC', 'GS', 'CG')
@@ -58,7 +58,7 @@ ALIAS_GENERICO: Dict[str, Tuple[str, ...]] = {
     "TERCERO": ("tercero", "nombretercero", "razonsocial", "raznsocial", "razonsocialtercerodocto",
                 "raznsocialtercerodocto", "nombreemisor", "nombre", "beneficiario", "proveedor", "cliente",
                 "nombretercero*"),
-    "Nit/C.C.": ("nit", "nitcc", "nittercero", "identificacion", "identificaciontercero", "cedula", "nitcedula",
+    "NIT": ("nit", "nitcc", "nittercero", "identificacion", "identificaciontercero", "cedula", "nitcedula",
                  "idtercero", "documentotercero", "nittercero*"),
     "FECHA": ("fecha", "fechadocumento", "fechadoc", "fechamovimiento", "fechacomprobante", "fechaelaboracion",
               "fechacontable", "fecha*"),
@@ -173,7 +173,7 @@ class TransformadorMovimientos(Reportador):
             },
             "opcionales": {
                 "TERCERO": ("razonsocialtercerodocto", "raznsocialtercerodocto"),
-                "Nit/C.C.": ("nittercero",),
+                "NIT": ("nittercero",),
                 COLUMNA_FECHA_ORIGEN: ("fecha",),
             },
             "detalle_vacio": True,
@@ -522,14 +522,15 @@ class TransformadorMovimientos(Reportador):
             raise ErrorUsuario("No se pudo guardar: cierra el archivo en Excel e inténtalo de nuevo.") from e
 
     def _guardar_rapido(self, df_final: pd.DataFrame, cols_indice: List[str]) -> None:
-        """Escribe MOVS_AUD directo al paquete xlsx: solo celdas de texto y valores ≠ 0; cebra/bordes por formato condicional."""
+        """Escribe MOVS_AUD directo al paquete xlsx: solo celdas de texto y valores ≠ 0, sin bordes ni rellenos en el cuerpo
+        (el usuario los personaliza) y fila final de TOTALES con SUBTOTAL."""
         n_filas, n_cols = df_final.shape
         n_indice = len(cols_indice)
         cols_cuentas = list(df_final.columns[n_indice:])
         letras = [get_column_letter(i) for i in range(1, max(n_cols, 1) + 1)]
         anchos, alto_hdr = self._dimensiones(df_final, n_indice)
         fino = '<left style="thin"><color rgb="FFE2E8F0"/></left><right style="thin"><color rgb="FFE2E8F0"/></right>'
-        borde_cuerpo = f'<border>{fino}<top style="thin"><color rgb="FFE2E8F0"/></top><bottom style="thin"><color rgb="FFE2E8F0"/></bottom><diagonal/></border>'
+        borde_cuerpo = '<border><left/><right/><top/><bottom/><diagonal/></border>'
         font_body = '<font><sz val="10"/><color rgb="FF000000"/><name val="Arial"/></font>'
         sin_relleno = '<fill><patternFill patternType="none"/></fill>'
 
@@ -545,14 +546,19 @@ class TransformadorMovimientos(Reportador):
                                  '"$" #,##0.00')
             s_fecha = libro.estilo(font_body, sin_relleno, borde_cuerpo, '<alignment horizontal="left" vertical="center"/>',
                                    'dd/mm/yyyy')
-            d_borde = libro.dxf(f'<dxf>{borde_cuerpo}</dxf>')
-            d_cebra = libro.dxf('<dxf><fill><patternFill patternType="solid"><bgColor rgb="FFF8FAFC"/></patternFill></fill></dxf>')
+            font_total = '<font><b/><sz val="10"/><color rgb="FF000000"/><name val="Arial"/></font>'
+            borde_total = ('<border><left/><right/><top style="thin"><color rgb="FF000000"/></top>'
+                           '<bottom style="double"><color rgb="FF000000"/></bottom><diagonal/></border>')
+            s_tot_lbl = libro.estilo(font_total, sin_relleno, borde_cuerpo, '<alignment horizontal="left" vertical="center"/>')
+            s_tot = libro.estilo(font_total, sin_relleno, borde_total, '<alignment horizontal="right" vertical="center"/>',
+                                 '"$" #,##0.00')
 
             # Celdas de texto pre-serializadas por fila
             bloque_txt = df_final[cols_indice].astype(object)
             valores_txt = bloque_txt.where(bloque_txt.notna(), None).to_numpy()
             matriz = np.nan_to_num(df_final[cols_cuentas].to_numpy(dtype=float)) if cols_cuentas else np.zeros((n_filas, 0))
             matriz_txt = matriz.tolist()
+            totales_cols = matriz.sum(axis=0).tolist()  # resultado guardado de las fórmulas SUBTOTAL
             nz_filas, nz_cols = np.nonzero(matriz)
             cortes = np.searchsorted(nz_filas, np.arange(n_filas + 1))
             nz_cols_txt = [letras[n_indice + c] for c in range(len(cols_cuentas))]
@@ -594,11 +600,13 @@ class TransformadorMovimientos(Reportador):
                     num = "".join(f'<c r="{nz_cols_txt[c]}{fila}" s="{s_num}"><v>{matriz_txt[r][c]!r}</v></c>'
                                   for c in nz_cols[a:b].tolist())
                     yield f'<row r="{fila}">{txt}{num}</row>'
-                yield (f'</sheetData><conditionalFormatting sqref="A2:{letras[-1]}{max(n_filas + 1, 2)}">'
-                       f'<cfRule type="expression" dxfId="{d_borde}" priority="1"><formula>TRUE</formula></cfRule>'
-                       f'<cfRule type="expression" dxfId="{d_cebra}" priority="2"><formula>MOD(ROW(),2)=1</formula></cfRule>'
-                       f'</conditionalFormatting><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" '
-                       f'header="0.3" footer="0.3"/></worksheet>')
+                if n_filas and cols_cuentas:
+                    ft, ultima_fila = n_filas + 2, n_filas + 1
+                    yield (f'<row r="{ft}"><c r="A{ft}" s="{s_tot_lbl}" t="inlineStr"><is><t>{MARCA_TOTALES}</t></is></c>'
+                           + "".join(f'<c r="{l}{ft}" s="{s_tot}"><f>SUBTOTAL(9,{l}2:{l}{ultima_fila})</f>'
+                                     f'<v>{float(t)!r}</v></c>' for l, t in zip(nz_cols_txt, totales_cols)) + '</row>')
+                yield ('</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" '
+                       'header="0.3" footer="0.3"/></worksheet>')
 
             self._reportar("Escribiendo archivo en disco...")
             libro.escribir_hoja(self.HOJA_DESTINO, partes())
@@ -607,7 +615,7 @@ class TransformadorMovimientos(Reportador):
 
         borde_fino = Side(border_style="thin", color="E2E8F0")
         borde_enc = Side(border_style="medium", color="0F172A")
-        cuerpo = Border(left=borde_fino, right=borde_fino, top=borde_fino, bottom=borde_fino)
+        cuerpo = Border()
         font_body = Font(name="Arial", size=10, color="000000")
         sin_relleno = PatternFill(fill_type=None)
         estilos = {
@@ -683,11 +691,7 @@ class TransformadorMovimientos(Reportador):
                         self._avance(60 + 35 * k / total)
                     escribir(r + 2, n_indice + c + 1, float(matriz[r, c]), num)
 
-            # Cebra y bordes del rango completo vía formato condicional (incluye celdas vacías)
-            rango = f"A2:{get_column_letter(max(n_cols, 1))}{max(n_filas + 1, 2)}"
-            ws.conditional_formatting.add(rango, FormulaRule(formula=["TRUE"], border=cuerpo))
-            ws.conditional_formatting.add(rango, FormulaRule(
-                formula=["MOD(ROW(),2)=1"], fill=PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")))
+            agregar_fila_totales_ws(ws, range(n_indice + 1, n_cols + 1), 2, n_filas + 1)
             ws.sheet_format.defaultRowHeight = 20
             ws.sheet_format.customHeight = True
             ws.freeze_panes = "A2"

@@ -94,7 +94,8 @@ REGLAS_CATEGORIAS_PUC = {
         "excluir": (),
     },
     "base": {
-        "incluir": ("14", "15", "16", "1705", "1710", "51", "52", "530505", "530515", "61", "62", "71", "73", "74"),
+        "incluir": ("14", "15", "16", "1705", "1710", "51", "52", "530505", "530515", "61", "62", "71", "73", "74",
+                    "510551", "520551"),  # dotación a trabajadores: compra a terceros (prima sobre la exclusión de nómina)
         "excluir": (
             "1410", "1430", "1499",                                   # producción interna / provisiones
             "1592", "1596", "1597", "1598", "1599", "1698", "1699",   # depreciaciones, amortizaciones, provisiones
@@ -137,6 +138,7 @@ CONCEPTO_RETENCION_POR_CUENTA = {  # prefijo de la cuenta de gasto/costo -> conc
     "519535": "combustibles", "529535": "combustibles",
     "170510": "honorarios", "170525": "arrendamientos", "170540": "servicios", "530515": "servicios",
     "5135": "servicios", "5235": "servicios", "7335": "servicios",
+    "519560": "servicios", "529560": "servicios",  # casino y restaurante
     # Mixtas (repuestos/materiales o mano de obra): "sin retención" con base de compras, "bajo base" con la de servicios
     "5145": "mixto", "5245": "mixto", "5150": "mixto", "5250": "mixto", "7345": "mixto",
 }
@@ -144,6 +146,10 @@ CONCEPTO_POR_CUENTA_RETENCION = {  # subcuenta 2365 usada -> concepto (prima sob
     "236515": "honorarios", "236520": "honorarios", "236525": "servicios", "236530": "arrendamientos",
     "236540": "compras", "236540004": "combustibles",
 }
+# Comentarios del listado de autorretenedores que eximen de retención; el resto (p. ej. REVISAR FACTURA) solo informa
+COMENTARIOS_NO_SUJETOS = ("AUTORRET", "SIMPLE", "ABSTEN", "NO SUJETO", "NO CONTRIBUYENTE", "PATRIMONIO")
+# Cuentas de costo/gasto/activo que registran impuestos (consumo, saludables, IVA llevado al costo): no son base de retención
+PATRON_IMPUESTO_EN_COSTO = r"\bIVA\b|IMPOCONSUMO|IMPUESTO\s*(NACIONAL\s*)?(AL\s*)?CONSUMO|SALUDABLE|ULTRAPROCESAD|AZUCARAD|\bINC\b|\bICUI\b|\bIBUA\b|BOLSAS?\s*PL"
 CONCEPTOS_ESTRICTOS = ("honorarios", "arrendamientos", "combustibles")  # su cruce con otra cuenta de retención se alerta
 TOLERANCIA_TARIFA_RETENCION = 0.15  # desviación relativa admitida frente a la tarifa del nombre de la cuenta
 TARIFA_MAXIMA_RETENCION = 0.11
@@ -232,4 +238,86 @@ INFO_CONCEPTOS = (
     "• Mixto: cuentas que pueden ser compra o servicio (mantenimiento, reparaciones). Para 'sin retención' se "
     "usa la base de compras y para 'bajo base mínima' la de servicios.\n\n"
     "Gana el prefijo más largo (ej. 236540 = compras, 236540004 = combustibles)."
+)
+# Guía de alertas (botón "?" en Conciliar y capítulo 11 del manual): (sección, nota, [(alerta, cuándo aparece, qué significa)])
+GUIA_ALERTAS = (
+    ("Retención en la fuente (cada comprobante contable)",
+     "Requieren marcar columnas de Retefuente (2365). La base es la suma de las cuentas marcadas como Base, sin los "
+     "impuestos llevados al costo (impuesto al consumo, saludables, IVA mayor valor). El concepto se toma de la cuenta "
+     "de retención usada; si no hay, de lo habitual con ese tercero; si no, de la cuenta de gasto.",
+     (
+         ("Sin retención",
+          "La compra supera la base mínima de su concepto y no se registró retención. No aparece si el proveedor es "
+          "autorretenedor, del régimen SIMPLE o no sujeto. Si al mismo tercero sí se le retuvo en otros comprobantes, lo indica.",
+          "Retención posiblemente omitida: la empresa responde por ella (art. 370 E.T.). Verifique si se retuvo al pagar."),
+         ("Retención practicada a no sujeto",
+          "Se registró retención a un proveedor que no debía tenerla: autorretenedor, régimen SIMPLE, \"abstenerse de "
+          "practicar retención\", \"no sujeto\" o patrimonio autónomo según el listado de Autorretenedores.",
+          "Retención indebida: el proveedor puede pedir el reintegro."),
+         ("Tercero con observación en listado de autorretenedores",
+          "El proveedor está en el listado con otro comentario (p. ej. \"REVISAR FACTURA – REGISTRO EN BOLSA\"). "
+          "Indica si se retuvo o no.",
+          "No es un error: requiere revisión manual (p. ej. en compras por bolsa la retención la practica la bolsa)."),
+         ("Retención con base bajo el mínimo",
+          "Se retuvo en una compra que no alcanza la base mínima de su concepto.",
+          "Retención sin causa, salvo que el concepto sea otro (revise el concepto indicado en la alerta)."),
+         ("Tarifa aplicada distinta a la de la cuenta",
+          "El nombre de la cuenta de retención trae un porcentaje (p. ej. \"Compras (2.5%)\") y lo retenido se aparta más "
+          "del 15 % de ese valor. Solo con una cuenta de retención en el comprobante.",
+          "Tarifa mal aplicada o base contable que incluye valores que no son base."),
+         ("Tarifa de retención atípica",
+          "Se retuvo más del 11 % de la base.",
+          "Ninguna tarifa común es tan alta: error de digitación o de cuenta."),
+         ("Cuenta de retención no corresponde al gasto",
+          "La retención se registró con un concepto distinto al del gasto y uno de los dos es honorarios, arrendamientos o "
+          "combustibles (p. ej. arriendo con retención de compras).",
+          "Concepto de retención mal aplicado: tarifa y base mínima pueden ser otras."),
+     )),
+    ("IVA (cada comprobante contable)", "",
+     (
+         ("IVA sin base gravada",
+          "El comprobante tiene IVA descontable pero ninguna cuenta marcada como Base tiene valor.",
+          "Falta marcar la cuenta del gasto o costo, o el IVA está mal contabilizado."),
+     )),
+    ("Factura DIAN vs contabilidad (hoja DIAN VS CONT)", "",
+     (
+         ("Factura rechazada en DIAN", "El estado de la factura en el Token dice \"Rechazada\".",
+          "La factura no sirve como soporte de costo ni de IVA."),
+         ("Nota crédito DIAN cruzada contra compras",
+          "Una nota crédito de la DIAN quedó emparejada con un comprobante de compra.",
+          "Debió registrarse como devolución."),
+         ("Factura a nombre de otro adquirente (art. 771-2 E.T.)",
+          "Una factura recibida está a nombre de un NIT distinto al de la empresa.",
+          "Ese costo no es deducible y el IVA no es descontable."),
+         ("IVA supera el 19 % de la base", "El IVA es mayor al 19 % de la base.",
+          "Ninguna tarifa de IVA es mayor: error de valores o de cuentas."),
+         ("Total DIAN no cuadra (BASE_2 u otros impuestos)",
+          "La pareja cuadra en base e IVA, pero el total de la factura no coincide con lo contabilizado, aun descontando "
+          "los otros impuestos de la factura (consumo, bolsas, etc.).",
+          "Falta marcar una cuenta en Base 2 o un impuesto adicional sin contabilizar."),
+         ("Contabilizada antes de la emisión", "La fecha contable es anterior a la emisión de la factura.",
+          "Causación anticipada."),
+         ("Contabilizada en año distinto a la emisión", "La factura es de un año y se contabilizó en otro.",
+          "Afecta el año en que se toma el costo (corte de periodo)."),
+         ("Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)",
+          "Comprobante contable sin factura electrónica en la DIAN (sin pareja o sin Num.Ext).",
+          "Costo e IVA sin soporte: solicitar la factura o el documento soporte."),
+     )),
+    ("Perfil tributario (hoy desactivado: no aparecen)",
+     "Dependen del tipo de contribuyente y de la periodicidad de IVA de la empresa.",
+     (
+         ("IVA descontable en empresa no responsable de IVA",
+          "La empresa no es responsable de IVA y registra IVA descontable.", "Ese IVA es mayor valor del costo o gasto."),
+         ("IVA descontable fuera del término (art. 496 E.T.)",
+          "El IVA se tomó después del periodo permitido (bimestral: 3 bimestres siguientes; cuatrimestral: el siguiente).",
+          "El IVA ya no se puede descontar."),
+         ("Retención practicada sin ser agente de retención",
+          "La empresa no está obligada a retener y registró retenciones.", "Retención indebida."),
+         ("Sin reteIVA: agente de IVA y proveedor con IVA",
+          "La empresa es agente de retención de IVA, el proveedor cobró IVA y no se retuvo el 15 %.", "ReteIVA omitida."),
+         ("ReteIVA distinta al 15 % del IVA", "Se retuvo IVA, pero no es el 15 % del IVA de la factura.",
+          "Valor de reteIVA mal calculado."),
+         ("ReteIVA practicada sin ser agente de retención de IVA",
+          "Se retuvo IVA sin que la empresa esté obligada.", "Retención indebida."),
+     )),
 )
