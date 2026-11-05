@@ -2,16 +2,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.config import PERFIL_TRIBUTARIO_ACTIVO
+from core.config import PERFIL_TRIBUTARIO_ACTIVO, TOKEN_SHEETS
 from core.errors import ErrorSistema, ErrorUsuario, HojaNoEncontradaError, Reportador, logger
 from data import parametros_repo
 from data.autorretenedores_repo import GestorAutorretenedores
-from shared.dataframes import limpiar_encabezados, quitar_filas_vacias
+from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_vacias
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
 from services.conciliacion import preparacion as prep
 from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
 from services.conciliacion.escritura import escribir_resultados
+from services.token_service import COLUMNAS_CALCULADAS, FormateadorToken
 
 
 class ConciliadorAuditoria(Reportador):
@@ -58,6 +59,25 @@ class ConciliadorAuditoria(Reportador):
         except Exception as e:
             raise ErrorSistema(f"Error leyendo la hoja principal: {e}") from e
 
+    @staticmethod
+    def _token_requiere_formato(df):
+        """Sin columnas calculadas, o con filas de factura cuyo CONCEPTO / Num.Ext / BASE quedó vacío."""
+        if any(c not in df.columns for c in COLUMNAS_CALCULADAS):
+            return True
+        col_folio = buscar_columna(df.columns, 'FOLIO')
+        filas = df[df[col_folio].notna()] if col_folio else df
+        vacias = filas[['CONCEPTO', 'Num.Ext', 'BASE']].apply(
+            lambda c: c.isna() | (c.astype(str).str.strip().isin(['', 'nan', 'None'])))
+        return bool(vacias.any(axis=None))
+
+    def _asegurar_token_formateado(self):
+        if not self._token_requiere_formato(self._cargar_token()):
+            return
+        self._reportar("El Token no está formateado: ejecutando 'Formatear token' automáticamente...")
+        FormateadorToken(
+            self.file_path, {k: self.sheet_names.get(k) for k in TOKEN_SHEETS}, progress_callback=self.progress_callback,
+        ).ejecutar()
+
     def _cargar_auditoria(self, nombre):
         return prep.limpiar_hoja_auditoria(
             limpiar_encabezados(cargar_hoja_encabezado_variable(self.file_path, nombre))
@@ -101,6 +121,7 @@ class ConciliadorAuditoria(Reportador):
 
     def ejecutar(self):
         hojas = self._validar_archivo()
+        self._asegurar_token_formateado()
 
         self._reportar("Cargando hoja de Token procesado...")
         df_token = prep.completar_columnas_token(self._cargar_token())

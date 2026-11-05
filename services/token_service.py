@@ -149,6 +149,11 @@ class FormateadorToken(Reportador):
         )
 
         df_conta = df_conta.assign(NIT_clean=limpiar_codigo(df_conta['NIT'])).drop_duplicates(subset=['NIT_clean'])
+        if {'TIPO', 'DETALLE'} <= set(df_conta.columns):
+            # TIPO-DETALLE suele ser fórmula (=CONCATENAR): sin valor en caché tras guardar con Python se lee vacío
+            actual = limpiar_codigo(df_conta['TIPO-DETALLE']) if 'TIPO-DETALLE' in df_conta.columns else ''
+            compuesto = (limpiar_codigo(df_conta['TIPO']) + ' ' + limpiar_codigo(df_conta['DETALLE'])).str.strip()
+            df_conta['TIPO-DETALLE'] = compuesto.where(pd.Series(actual, index=df_conta.index) == '', actual)
         cols_a_traer = ['NIT_clean'] + [c for c in ('TIPO-DETALLE', 'TIPO') if c in df_conta.columns]
 
         df = df_principal.merge(df_conta[cols_a_traer], left_on='NIT_Cruce', right_on='NIT_clean', how='left')
@@ -235,4 +240,3 @@ class FormateadorToken(Reportador):
             raise
         except Exception as e:
             raise ErrorSistema(f"Error escribiendo la hoja Token: {e}") from e
-
