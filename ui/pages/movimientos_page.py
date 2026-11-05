@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from services.movimientos_service import TransformadorMovimientos
+from services.movimientos_service import TIPO_GENERICO, TransformadorMovimientos
 from ui.pages.base import Pagina, asignar_hojas
 from ui.theme import PALETTE
 from ui.widgets import ScrollableChecklist, boton_primario, card, encabezado_card, habilitar_boton
@@ -93,12 +93,12 @@ class MovimientosPage(Pagina):
         self.lista.limpiar()
         self.tipo_vars = {}
         if not tipos:
-            self.lista.mensaje("Selecciona una hoja válida de movimientos (formato estándar o auxiliar por documento).")
+            self.lista.mensaje("Selecciona una hoja de movimientos con, al menos, cuenta, débito/crédito (o valor) y tipo o número de documento.")
         else:
             grid = tk.Frame(self.lista.inner, bg=PALETTE["surface"])
             grid.pack(fill=tk.X, padx=8, pady=8)
             for i, tipo in enumerate(tipos):
-                var = tk.BooleanVar(value=tipo.startswith(TransformadorMovimientos.PREFIJOS_PERMITIDOS))
+                var = tk.BooleanVar(value=tipo == TIPO_GENERICO or tipo.startswith(TransformadorMovimientos.PREFIJOS_PERMITIDOS))
                 self.tipo_vars[tipo] = var
                 ttk.Checkbutton(grid, text=tipo, variable=var, style="Card.TCheckbutton").grid(
                     row=i // COLUMNAS_GRID_TIPOS, column=i % COLUMNAS_GRID_TIPOS, sticky="w", padx=(0, 20), pady=6)

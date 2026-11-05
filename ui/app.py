@@ -1,5 +1,6 @@
 import gc
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import actualizador
@@ -17,7 +18,9 @@ from ui.theme import PALETTE, aplicar_icono, configurar_estilos, fuente, fuente_
 from ui.widgets import boton_secundario
 from ui.worker import EjecutorSegundoPlano
 
-# (sección, [(id, texto del menú, clase)]) en el orden del menú lateral
+URL_GUIA_AUDITOR = "https://drive.google.com/file/d/1v3588agUQlwzUIutPHNuvzRCChFl1pRb/view?usp=sharing"  # TODO: enlace a la Guía del auditor
+
+# (sección, [(id, texto del menú, clase de página o URL a abrir)]) en el orden del menú lateral
 NAVEGACION = [
     ("Proceso", [
         ("token", "1   Formatear token", TokenPage),
@@ -32,6 +35,9 @@ NAVEGACION = [
         ("preview", "Vista previa", PreviewPage),
         ("autorretenedores", "Autorretenedores", AutorretenedoresPage),
     ]),
+     ("Ayuda", [
+         ("guia", "Guía del auditor", URL_GUIA_AUDITOR),
+     ]),
 ]
 PAGINA_INICIAL = "config"
 
@@ -71,7 +77,8 @@ class ConciliadorApp(tk.Tk):
         contenedor.pack(fill=tk.BOTH, expand=True, padx=28, pady=(24, 0))
         for _, items in NAVEGACION:
             for page_id, _, clase in items:
-                self.paginas[page_id] = clase(contenedor, self)
+                if not isinstance(clase, str):
+                    self.paginas[page_id] = clase(contenedor, self)
 
         self._construir_barra_estado()
         self.show_page(PAGINA_INICIAL)
@@ -92,13 +99,13 @@ class ConciliadorApp(tk.Tk):
         for seccion, items in NAVEGACION:
             tk.Label(self.sidebar, text=seccion.upper(), bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_section"],
                      font=(fuente(), 8, "bold"), anchor="w").pack(fill=tk.X, padx=28, pady=(18, 6))
-            for page_id, texto, _ in items:
-                self._boton_nav(page_id, texto)
+            for page_id, texto, destino in items:
+                self._boton_nav(page_id, texto, destino if isinstance(destino, str) else None)
         tk.Button(self.sidebar, text="⟳  Actualizar", bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"],
                   activebackground=PALETTE["sidebar_hover"], activeforeground=PALETTE["text"],
                   font=(fuente(), 10), bd=0, relief="flat", highlightthickness=0, anchor="w",
                   padx=26, pady=9, cursor="hand2", command=self._on_actualizar).pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 16))
-    def _boton_nav(self, page_id, texto):
+    def _boton_nav(self, page_id, texto, url=None):
         fila = tk.Frame(self.sidebar, bg=PALETTE["sidebar_bg"])
         fila.pack(fill=tk.X, padx=12, pady=1)
         indicador = tk.Frame(fila, bg=PALETTE["sidebar_bg"], width=3)
@@ -106,7 +113,8 @@ class ConciliadorApp(tk.Tk):
         btn = tk.Button(fila, text=texto, bg=PALETTE["sidebar_bg"], fg=PALETTE["sidebar_fg"],
                         activebackground=PALETTE["sidebar_hover"], activeforeground=PALETTE["text"],
                         font=(fuente(), 10), bd=0, relief="flat", highlightthickness=0, anchor="w",
-                        padx=14, pady=9, cursor="hand2", command=lambda: self.show_page(page_id))
+                        padx=14, pady=9, cursor="hand2",
+                        command=(lambda: webbrowser.open(url)) if url else (lambda: self.show_page(page_id)))
         btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         btn.bind("<Enter>", lambda e: self._estilo_nav(page_id, "hover") if self.current_page != page_id else None)
         btn.bind("<Leave>", lambda e: self._estilo_nav(page_id, "normal") if self.current_page != page_id else None)
