@@ -10,7 +10,7 @@ from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
 from shared.totales import quitar_fila_totales
 from services.conciliacion import preparacion as prep
-from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
+from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores, resumen_tratamientos
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
 from services.conciliacion.escritura import escribir_resultados
 from services.token_service import COLUMNAS_CALCULADAS, FormateadorToken
@@ -108,9 +108,12 @@ class ConciliadorAuditoria(Reportador):
         valor_uvt = f"{parametros['uvt'][anio]:,.0f}".replace(",", ".")
         self._reportar(f"  UVT {anio}: ${valor_uvt} | Vigencia desde {desde}: "
                        + ", ".join(f"{c} {v:g}" for c, v in bases.items()) + " UVT")
+        dict_auto = diccionario_autorretenedores(df_autorretenedores)
+        for linea in resumen_tratamientos(dict_auto):
+            self._reportar(linea)
         res = alertas_retencion(
             df_aud_comp, self.seriales_base, self.seriales_iva, self.seriales_ret, self.seriales_reteiva,
-            diccionario_autorretenedores(df_autorretenedores), self.perfil,
+            dict_auto, self.perfil,
         )
         df_res_auditoria[res.columns] = res
 

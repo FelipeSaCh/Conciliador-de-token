@@ -23,9 +23,20 @@ def por_defecto():
     }
 
 
+def _base_fabrica(desde, concepto):
+    """UVT de fábrica del concepto en la vigencia que rige a la fecha 'desde' (para columnas nuevas)."""
+    vigente = next((v for d, v in reversed(BASES_MINIMAS_RETENCION_UVT) if str(desde) >= d), BASES_MINIMAS_RETENCION_UVT[0][1])
+    return float(vigente.get(concepto, 0))
+
+
 def _desde_json(datos):
     uvt = {int(a): float(v) for a, v in datos["uvt"].items()}
-    bases = [(b["desde"], {c: float(b.get(c, 0)) for c in CONCEPTOS_BASE_MINIMA}) for b in datos["bases"]]
+    faltantes = {c for b in datos["bases"] for c in CONCEPTOS_BASE_MINIMA if c not in b}
+    if faltantes:
+        logger.info(f"Parámetros tributarios sin columna {', '.join(sorted(faltantes))}: se usan los valores de fábrica "
+                    "de cada vigencia hasta que se guarden desde 'Parámetros tributarios'.")
+    bases = [(b["desde"], {c: float(b[c]) if c in b else _base_fabrica(b["desde"], c) for c in CONCEPTOS_BASE_MINIMA})
+             for b in datos["bases"]]
     if not uvt or not bases:
         raise ValueError("Parámetros incompletos")
     return {"uvt": uvt, "bases": sorted(bases, key=lambda b: b[0])}

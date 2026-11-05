@@ -12,7 +12,7 @@ from core.config import (
 from core.errors import ErrorSistema, ErrorUsuario
 from services.conciliacion.alertas import COL_ALERTAS, diccionario_autorretenedores
 from shared.excel_io import escritor_excel
-from shared.texto import VALORES_NULOS
+from shared.texto import VALORES_NULOS, normalizar_nit
 from shared.totales import agregar_fila_totales_ws, quitar_filas_totales_ws
 
 COLUMNAS_INYECTADAS = [
@@ -180,7 +180,7 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
         )
         calc = vacio if fantasma or idx >= len(registros) else registros[idx]
         idx += 0 if fantasma else 1
-        nit = re.sub(r'\D', '', str(valores[col_nit - 1])) if col_nit else ''
+        nit = normalizar_nit(valores[col_nit - 1]) if col_nit else ''
         filas.append({
             'original_values': valores,
             'base': calc.get('BASE', 0),
@@ -228,10 +228,10 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
     fila_ini, fila_fin = header_row + 1, header_row + len(filas)
     _limpiar_marcas_grupo(ws, fila_ini, ws.max_row, max_col)
 
-    # Proveedores registrados en Autorretenedores (quedan arriba por el orden): fondo y recuadro por bloque contiguo
+    # Autorretenedores (quedan arriba por el orden): fondo y recuadro por bloque contiguo; los demás comentarios no se pintan
     inicio = None
     for i, fila in enumerate(filas + [{'auto': ''}]):
-        con_registro = bool(str(fila.get('auto', '')).strip())
+        con_registro = 'AUTORRETENEDOR' in str(fila.get('auto', '')).upper()
         if con_registro and inicio is None:
             inicio = i
         elif not con_registro and inicio is not None:

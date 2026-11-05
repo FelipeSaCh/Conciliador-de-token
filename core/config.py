@@ -127,10 +127,14 @@ CARACTERES_ESPECIALES = [
 # Retención en la fuente (renta): UVT por año y bases mínimas en UVT por vigencia
 UVT_POR_ANIO = {2024: 47065, 2025: 49799, 2026: 52374}
 BASES_MINIMAS_RETENCION_UVT = (  # (vigente desde, {concepto: UVT})
-    ("2000-01-01", {"compras": 27, "servicios": 4, "arrendamientos": 27, "honorarios": 0, "combustibles": 0}),
-    ("2025-06-01", {"compras": 10, "servicios": 2, "arrendamientos": 10, "honorarios": 0, "combustibles": 0}),  # Dcto. 572/2025
-    ("2026-05-08", {"compras": 27, "servicios": 4, "arrendamientos": 27, "honorarios": 0, "combustibles": 0}),  # Suspensión C.E.
-    ("2026-07-01", {"compras": 10, "servicios": 2, "arrendamientos": 10, "honorarios": 0, "combustibles": 0}),  # Revocatoria suspensión (Auto C.E. 02-jun-2026)
+    ("2000-01-01", {"compras": 27, "servicios": 4, "arrendamientos": 27, "honorarios": 0, "combustibles": 0,
+                    "agropecuario": 92}),
+    ("2025-06-01", {"compras": 10, "servicios": 2, "arrendamientos": 10, "honorarios": 0, "combustibles": 0,
+                    "agropecuario": 70}),  # Dcto. 572/2025
+    ("2026-05-08", {"compras": 27, "servicios": 4, "arrendamientos": 27, "honorarios": 0, "combustibles": 0,
+                    "agropecuario": 92}),  # Suspensión C.E.
+    ("2026-07-01", {"compras": 10, "servicios": 2, "arrendamientos": 10, "honorarios": 0, "combustibles": 0,
+                    "agropecuario": 70}),  # Revocatoria suspensión (Auto C.E. 02-jun-2026)
 )
 CONCEPTO_RETENCION_POR_CUENTA = {  # prefijo de la cuenta de gasto/costo -> concepto; resto = compras
     "5110": "honorarios", "5210": "honorarios", "7310": "honorarios",
@@ -146,8 +150,42 @@ CONCEPTO_POR_CUENTA_RETENCION = {  # subcuenta 2365 usada -> concepto (prima sob
     "236515": "honorarios", "236520": "honorarios", "236525": "servicios", "236530": "arrendamientos",
     "236540": "compras", "236540004": "combustibles",
 }
-# Comentarios del listado de autorretenedores que eximen de retención; el resto (p. ej. REVISAR FACTURA) solo informa
-COMENTARIOS_NO_SUJETOS = ("AUTORRET", "SIMPLE", "ABSTEN", "NO SUJETO", "NO CONTRIBUYENTE", "PATRIMONIO")
+# Comentario del listado de autorretenedores -> tratamiento en las alertas de retención (gana la primera coincidencia).
+#   no_sujeto: no se exige retención | agropecuario: base mínima y tarifa de productos agropecuarios
+#   tarifa_reducida: no se compara la tarifa de la cuenta | observacion: solo informa (revisión manual)
+# Todo tratamiento distinto de autorretenedor/SIMPLE deja una alerta "Tratamiento especial por listado…" en el comprobante.
+TRATAMIENTOS_LISTADO = (
+    ("AUTORRET", "no_sujeto", "es autorretenedor: él mismo se practica la retención en la fuente"),
+    ("SIMPLE", "no_sujeto", "pertenece al régimen SIMPLE: no se le practica retención en la fuente (art. 911 E.T.)"),
+    ("PATRIMONIO", "no_sujeto", "es un patrimonio autónomo: la retención la maneja la sociedad fiduciaria"),
+    ("FIDEICOMISO", "no_sujeto", "es un fideicomiso (patrimonio autónomo): la retención la maneja la sociedad fiduciaria"),
+    ("ABSTEN", "no_sujeto", "pidió abstenerse de practicar retención; conserve el soporte de esa solicitud"),
+    ("NO SUJETO", "no_sujeto", "está marcado como no sujeto a retención"),
+    ("NO CONTRIBUYENTE", "no_sujeto", "está marcado como no contribuyente del impuesto de renta"),
+    ("NO APLICA POR", "no_sujeto", "está marcado como 'no aplica' por la norma citada en el listado; conserve el soporte"),
+    ("AGRICOLA", "agropecuario", "vende productos agropecuarios sin procesamiento industrial: tienen base mínima y "
+                                 "tarifa propias (1,5 %)"),
+    ("ZESE", "tarifa_reducida", "pertenece al régimen especial ZESE: según el año de permanencia la retención puede ser "
+                                "0 % o el 50 % de la tarifa general"),
+    ("ZOMAC", "tarifa_reducida", "es sociedad ZOMAC: su tarifa de renta es reducida y la retención se aplica en esa proporción"),
+    ("50%", "tarifa_reducida", "pidió que se le aplique el 50 % de la tarifa de retención"),
+    ("LEY 1819", "observacion", "se acoge a la Ley 1819 de 2016: si es persona natural que no contrata 2 o más trabajadores, la retención se calcula con la "
+                                "tabla del art. 383 E.T.; eso no significa que no se le retenga"),
+    ("BOLSA", "observacion", "puede vender por bolsa de productos: si la compra se hizo por bolsa, la retención la "
+                             "practica la bolsa, no el comprador"),
+    ("RGB", "observacion", "tiene clasificación RGB en el listado: revise el soporte para definir la retención"),
+    ("SIN ANIMO", "observacion", "es entidad sin ánimo de lucro: si pertenece al régimen tributario especial puede no estar "
+                                 "sujeta a retención; verifique su RUT"),
+    ("REVISAR FACTURA", "observacion", "tiene la indicación de revisar la factura para definir el tratamiento"),
+)
+ETIQUETAS_TRATAMIENTO = {
+    "no_sujeto": "No se exige retención",
+    "agropecuario": "Se evalúa como compra de productos agropecuarios (base mínima y tarifa 1,5 % propias)",
+    "tarifa_reducida": "Se exige retención, pero no se compara la tarifa con la de la cuenta",
+    "observacion": "Solo informa: no se alerta \"Sin retención\"; revisión manual",
+}
+COMENTARIOS_NO_SUJETOS = tuple(k for k, t, _ in TRATAMIENTOS_LISTADO if t == "no_sujeto")
+TARIFA_RETENCION_AGROPECUARIO = 0.015
 # Cuentas de costo/gasto/activo que registran impuestos (consumo, saludables, IVA llevado al costo): no son base de retención
 PATRON_IMPUESTO_EN_COSTO = r"\bIVA\b|IMPOCONSUMO|IMPUESTO\s*(NACIONAL\s*)?(AL\s*)?CONSUMO|SALUDABLE|ULTRAPROCESAD|AZUCARAD|\bINC\b|\bICUI\b|\bIBUA\b|BOLSAS?\s*PL"
 CONCEPTOS_ESTRICTOS = ("honorarios", "arrendamientos", "combustibles")  # su cruce con otra cuenta de retención se alerta
@@ -195,7 +233,7 @@ INFO_PERIODICIDAD_IVA = (
 # Parámetros tributarios editables desde la app (UVT y bases mínimas). Los valores de arriba son los de fábrica.
 ARCHIVO_PARAMETROS = CARPETA_AUTORRETENEDORES / "parametros_tributarios.json"
 ARCHIVO_PARAMETROS_LOCAL = BASE_DIR / "parametros_tributarios.json"
-CONCEPTOS_BASE_MINIMA = ("compras", "servicios", "arrendamientos", "honorarios", "combustibles")
+CONCEPTOS_BASE_MINIMA = ("compras", "servicios", "arrendamientos", "honorarios", "combustibles", "agropecuario")
 INFO_PARAMETROS_UVT = (
     "UVT por año: valor fijado cada año por resolución de la DIAN.\n\n"
     "Bases mínimas por vigencia: número de UVT a partir del cual se practica retención en la fuente. "
@@ -204,6 +242,9 @@ INFO_PARAMETROS_UVT = (
     "base mínima = UVT del año × UVT del concepto.\n\n"
     "Concepto: se toma de la cuenta de retención usada (2365xx); si no hay, del concepto que tuvo el "
     "mismo tercero en el periodo; si no, de la cuenta de gasto. 0 UVT = sin base mínima.\n\n"
+    "Agropecuario: se aplica a los terceros marcados \"AGRICOLA\" en Autorretenedores (compra de productos "
+    "agropecuarios sin procesamiento industrial, tarifa 1,5 %). Si un archivo de parámetros guardado antes no trae "
+    "esta columna, se usa el valor de fábrica de la vigencia.\n\n"
     "Los cambios se guardan en la carpeta compartida y aplican a todos los usuarios."
 )
 
@@ -248,16 +289,26 @@ GUIA_ALERTAS = (
      (
          ("Sin retención",
           "La compra supera la base mínima de su concepto y no se registró retención. No aparece si el proveedor es "
-          "autorretenedor, del régimen SIMPLE o no sujeto. Si al mismo tercero sí se le retuvo en otros comprobantes, lo indica.",
+          "autorretenedor, del régimen SIMPLE o no sujeto, ni si el listado solo pide revisión manual. A los terceros "
+          "marcados \"AGRICOLA\" se les aplica la base mínima agropecuaria e indica la retención esperada al 1,5 %. "
+          "Si al mismo tercero sí se le retuvo en otros comprobantes, lo indica.",
           "Retención posiblemente omitida: la empresa responde por ella (art. 370 E.T.). Verifique si se retuvo al pagar."),
          ("Retención practicada a no sujeto",
           "Se registró retención a un proveedor que no debía tenerla: autorretenedor, régimen SIMPLE, \"abstenerse de "
-          "practicar retención\", \"no sujeto\" o patrimonio autónomo según el listado de Autorretenedores.",
+          "practicar retención\", \"no sujeto\", patrimonio autónomo, fideicomiso o \"no aplica por\" una norma, "
+          "según el listado de Autorretenedores. La alerta explica por qué el tercero no es sujeto.",
           "Retención indebida: el proveedor puede pedir el reintegro."),
          ("Tercero con observación en listado de autorretenedores",
           "El proveedor está en el listado con otro comentario (p. ej. \"REVISAR FACTURA – REGISTRO EN BOLSA\"). "
-          "Indica si se retuvo o no.",
+          "Indica si se retuvo o no y qué significa el comentario (bolsa, RGB, Ley 1819, sin ánimo de lucro, etc.). "
+          "Para estos terceros no se alerta \"Sin retención\".",
           "No es un error: requiere revisión manual (p. ej. en compras por bolsa la retención la practica la bolsa)."),
+         ("Tratamiento especial por listado de autorretenedores",
+          "El tercero tiene en el listado un comentario que cambia la forma de evaluar la retención: no sujeto "
+          "(patrimonio autónomo, fideicomiso, abstenerse, \"no aplica por\"), productos agropecuarios o tarifa "
+          "reducida (ZESE, ZOMAC, 50 %). No aparece para autorretenedores ni régimen SIMPLE.",
+          "Es informativa: deja constancia del criterio que el programa aplicó a ese comprobante y por qué. "
+          "Verifique que el comentario del listado siga vigente y tenga soporte."),
          ("Retención con base bajo el mínimo",
           "Se retuvo en una compra que no alcanza la base mínima de su concepto.",
           "Retención sin causa, salvo que el concepto sea otro (revise el concepto indicado en la alerta)."),
@@ -303,6 +354,11 @@ GUIA_ALERTAS = (
           "Comprobante contable sin factura electrónica en la DIAN (sin pareja o sin Num.Ext).",
           "Costo e IVA sin soporte: solicitar la factura o el documento soporte."),
      )),
+    ("Comentarios del listado de autorretenedores (cómo se tratan)",
+     "El programa busca estas palabras en el comentario de cada tercero del listado; gana la primera que coincida. "
+     "Un comentario que no coincide con ninguna se trata como observación (solo informa).",
+     tuple((f"Comentario con \"{clave}\"", ETIQUETAS_TRATAMIENTO[tratamiento], f"El tercero {explicacion}.")
+           for clave, tratamiento, explicacion in TRATAMIENTOS_LISTADO)),
     ("Perfil tributario (hoy desactivado: no aparecen)",
      "Dependen del tipo de contribuyente y de la periodicidad de IVA de la empresa.",
      (
