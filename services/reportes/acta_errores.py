@@ -252,7 +252,7 @@ class GeneradorActaErrores:
         df = self.df[
             ~nov.isin(NOVEDADES_SIN_PAREJA) & nov.notna()
             & ~nov.str.contains('Sin Pareja', na=False)
-            & ~nov.str.contains('Gasto Personal', na=False, case=False)
+            & ~nov.str.startswith('DIAN - Gasto Personal', na=False)
             & ~nov.str.contains('Application Response', na=False, case=False)
             & ~nov.str.startswith('DIAN:')
         ]

@@ -4,7 +4,9 @@ import pandas as pd
 
 from core.config import COLUMNAS_DIAN_VS_CONT, IMPUESTOS_ADICIONALES, ORDEN
 from core.errors import ErrorUsuario
-from shared.dataframes import a_numero, buscar_columna, columna_o_vacio, contiene, quitar_filas_vacias, sumar_columnas
+from shared.dataframes import (
+    a_numero, buscar_columna, columna_o_vacio, contiene, es_personal, quitar_filas_vacias, sumar_columnas,
+)
 from shared.totales import quitar_fila_totales
 from shared.texto import limpiar_codigo, mascara_duplicados, normalizar_num_ext, tiene_caracter_especial
 
@@ -15,23 +17,19 @@ def completar_columnas_token(df):
     if 'Prefijo' not in df.columns:
         df['Prefijo'] = ''
 
-    # Num.Ext y BASE se calculan si faltan o están vacíos (Token sin formatear con encabezados copiados)
-    num_ext = limpiar_codigo(df['Num.Ext']) if 'Num.Ext' in df.columns else pd.Series('', index=df.index)
-    if (num_ext == '').any():
-        col_folio = buscar_columna(df.columns, 'FOLIO')
-        if not col_folio:
-            raise ErrorUsuario("La hoja de Token no contiene 'Num.Ext' ni la columna 'Folio' para construirlo.")
-        calculado = limpiar_codigo(df['Prefijo'], strip=False) + limpiar_codigo(df[col_folio], strip=False)
-        df['Num.Ext'] = num_ext.where(num_ext != '', calculado)
+    # Num.Ext y BASE se reconstruyen SIEMPRE desde Prefijo + Folio y Total − IVA mientras el Token tenga esas
+    # columnas (nunca se confía en un valor de una ejecución anterior); solo sin ellas se conserva lo que haya.
+    col_folio = buscar_columna(df.columns, 'FOLIO')
+    if col_folio:
+        df['Num.Ext'] = limpiar_codigo(df['Prefijo'], strip=False) + limpiar_codigo(df[col_folio], strip=False)
+    elif 'Num.Ext' not in df.columns:
+        raise ErrorUsuario("La hoja de Token no contiene 'Num.Ext' ni la columna 'Folio' para construirlo.")
 
-    base = df['BASE'] if 'BASE' in df.columns else pd.Series(np.nan, index=df.index)
-    vacia = pd.to_numeric(base, errors='coerce').isna()
-    if vacia.any():
-        if 'Total' in df.columns and 'IVA' in df.columns:
-            total, iva = a_numero(df['Total']), a_numero(df['IVA'])
-            df['BASE'] = np.where(vacia, np.where(total == 0, 0, total - iva), base)
-        else:
-            df['BASE'] = np.where(vacia, 0, base)
+    if 'Total' in df.columns and 'IVA' in df.columns:
+        total, iva = a_numero(df['Total']), a_numero(df['IVA'])
+        df['BASE'] = np.where(total == 0, 0, total - iva)
+    else:
+        df['BASE'] = a_numero(df['BASE']) if 'BASE' in df.columns else 0
 
     if 'CONCEPTO' not in df.columns:
         df['CONCEPTO'] = ''
@@ -51,10 +49,6 @@ def mapas_impuestos(df):
         mapa.pop('', None)
         mapas[col] = mapa
     return mapas
-
-
-def es_personal(df):
-    return df['CONCEPTO'].astype(str).str.strip().str.upper().str.contains('PERSONAL', na=False)
 
 
 def marcar_novedades_token(df, filtro_grupo):

@@ -48,7 +48,10 @@ COLUMNAS_DIAN_VS_CONT = [
 
 COLUMNAS_EXCLUIDAS_AUD_COMP = ['Tipo', 'Número', 'Num.Ext', 'Fecha', 'Nit/C.C.', 'Tercero', 'Detalle', 'Sumas', 'IVA', 'BASE', "TIPO", "NUMERO", "CHEQ.NO",
                                "NO.EXT", "AÑO", "MES", "DIA", "NIT", "TERCERO", "SUC.PTO", "DOCRELA", "CCOSTO", "SCCOSTO", "DETALLE", "Unnamed: 17",
-                               "ELABORO", "REF1", "REF2", "REF3", "REF4", "No. AUTORIZACION(DATAFONO)"]
+                               "ELABORO", "REF1", "REF2", "REF3", "REF4", "No. AUTORIZACION(DATAFONO)",
+                               # Columnas que inyecta la conciliación (re-procesos): nunca son seriales
+                               "AUTORRETENCION", "BASE_2", "OTROS IMPUESTOS", "RETENCIONES", "RETEFUENTE", "RETEIVA",
+                               "ALERTA"]
 
 # Tributos que suman al total de la factura vs. retenciones (informativas, no suman)
 COLUMNAS_TRIBUTOS = [
@@ -353,6 +356,11 @@ GUIA_ALERTAS = (
          ("Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)",
           "Comprobante contable sin factura electrónica en la DIAN (sin pareja o sin Num.Ext).",
           "Costo e IVA sin soporte: solicitar la factura o el documento soporte."),
+         ("Gasto personal contabilizado",
+          "Un comprobante contable tiene el Num.Ext (y NIT) de una factura DIAN que la hoja Contabilidad marca como gasto "
+          "personal (TIPO o concepto con \"PERSONAL\"). La fila contable y la de la DIAN quedan juntas en DIAN VS CONT.",
+          "Ese valor no es costo ni gasto deducible de la empresa (art. 107 E.T.) y su IVA no es descontable "
+          "(art. 488 E.T.). Reverse el registro o corrija el concepto en Contabilidad si no es personal."),
      )),
     ("Comentarios del listado de autorretenedores (cómo se tratan)",
      "El programa busca estas palabras en el comentario de cada tercero del listado; gana la primera que coincida. "

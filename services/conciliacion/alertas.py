@@ -349,6 +349,9 @@ def alertas_conciliacion(df, prioridad_dian, prioridad_cont, mask_pairs, perfil=
     sin_soporte = es_cont & (novedad.str.contains('CONT - Sin Pareja en DIAN', regex=False)
                              | novedad.str.contains('CONT - Sin Num.Ext', regex=False))
     agregar_alerta(alertas, sin_soporte, 'Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)')
+    personal_cont = contable & novedad.str.startswith('CONT - Gasto Personal contabilizado')
+    agregar_alerta(alertas, personal_cont, 'Gasto personal contabilizado: no es costo ni gasto deducible de la empresa '
+                                           '(art. 107 E.T.) y su IVA no es descontable (art. 488 E.T.)')
     return alertas
 
 # Texto con que empieza (o que contiene) cada alerta -> nombre en GUIA_ALERTAS
@@ -370,6 +373,7 @@ _FIRMAS_ALERTA = (
     (r'^Contabilizada antes', 'Contabilizada antes de la emisión'),
     (r'^Contabilizada en año distinto', 'Contabilizada en año distinto a la emisión'),
     (r'^Sin factura/documento soporte', 'Sin factura/documento soporte electrónico en DIAN (art. 771-2 E.T.)'),
+    (r'^Gasto personal contabilizado', 'Gasto personal contabilizado'),
     (r'^IVA descontable en empresa no responsable', 'IVA descontable en empresa no responsable de IVA'),
     (r'^IVA descontable fuera del término', 'IVA descontable fuera del término (art. 496 E.T.)'),
     (r'^Retención practicada sin ser agente', 'Retención practicada sin ser agente de retención'),

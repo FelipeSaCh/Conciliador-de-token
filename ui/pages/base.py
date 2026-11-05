@@ -36,4 +36,7 @@ def asignar_hojas(combo, var, hojas, opcional=False, reiniciar=True):
         return
     actual = var.get()
     if actual not in hojas and actual != "":
-        var.set("" if opcional else (hojas[0] if hojas else ""))
+        # Mismo nombre con otras mayúsculas/espacios ("Contabilidad" vs "contabilidad"): se conserva la hoja
+        clave = "".join(actual.split()).upper()
+        igual = next((h for h in hojas if "".join(str(h).split()).upper() == clave), None)
+        var.set(igual if igual else ("" if opcional else (hojas[0] if hojas else "")))

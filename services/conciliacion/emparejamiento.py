@@ -239,6 +239,36 @@ def _marcar_diferencias_nit(df, mask_pairs):
     _agregar_novedad(df, df['Diff_NIT'], 'No coincide tercero')
 
 
+NOVEDAD_PERSONAL_DIAN = 'DIAN - Gasto Personal'
+NOVEDAD_PERSONAL_CONT = 'CONT - Gasto Personal contabilizado'
+
+
+def _marcar_personales_contabilizados(df):
+    """CONT 'sin pareja' cuyo Num.Ext (y NIT) es de una factura DIAN marcada como gasto personal: no es un faltante,
+    es un gasto personal registrado en la contabilidad. Ambas filas quedan juntas y con la novedad explícita."""
+    es_personal_dian = (df['Prioridad_Fila'] == PRIORIDAD_DIAN) & df['Novedad'].astype(str).str.startswith(
+        NOVEDAD_PERSONAL_DIAN)
+    if not es_personal_dian.any():
+        return
+    nit = df['NIT Emisor'].map(normalizar_nit)
+    personales = {}
+    for d in df.index[es_personal_dian]:
+        clave = df.at[d, 'Num.Ext_Clean']
+        if clave:
+            personales.setdefault(clave, []).append(d)
+    candidatos = (df['Prioridad_Fila'] == PRIORIDAD_CONT) & df['Novedad'].isin(
+        ['CONT - Sin Pareja en DIAN', 'CONT - DUPLICADO'])
+    for c in df.index[candidatos]:
+        dian = [d for d in personales.get(df.at[c, 'Num.Ext_Clean'], []) if not nit[c] or not nit[d] or nit[c] == nit[d]]
+        if not dian:
+            continue
+        d = dian[0]
+        df.at[c, 'Novedad'] = (f"{NOVEDAD_PERSONAL_CONT}: la factura DIAN {df.at[d, 'Num.Ext']} está marcada como "
+                               "gasto personal en Contabilidad")
+        if 'contabilizada en AUD-COMP' not in df.at[d, 'Novedad']:
+            df.at[d, 'Novedad'] = f"{df.at[d, 'Novedad']} / contabilizada en AUD-COMP"
+
+
 def _emparejar_por_documento(df):
     """CONT sin Num.Ext: Tipo de documento + CUFE/CUDE como Num.Ext contra huérfanos DIAN."""
     mask_cont = (df['Prioridad_Fila'] == PRIORIDAD_CONT) & (df['Novedad'] == 'CONT - Sin Num.Ext')
@@ -276,7 +306,7 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
     df = pd.concat([df_dian, df_cont], ignore_index=True)
 
     col_nombre = 'Nombre Emisor' if 'Nombre Emisor' in df.columns else 'TERCERO'
-    mask_totales = df[col_nombre].fillna('').astype(str).str.upper().str.contains('TOTALES')
+    mask_totales = df[col_nombre].fillna('').astype(str).str.strip().str.upper() == 'TOTALES'
     mask_ceros = df['Num.Ext_Clean'].fillna('').astype(str).str.contains('0000000000')
     df = df[~(mask_totales | mask_ceros)].reset_index(drop=True)
 
@@ -300,6 +330,7 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
         )
 
     _emparejar_por_documento(df)
+    _marcar_personales_contabilizados(df)
 
     df['NIT_Emisor_Clean'] = df['NIT Emisor'].map(normalizar_nit)
     df['NIT_Emisor_Group'] = df.groupby('Num.Ext_Clean')['NIT_Emisor_Clean'].transform('max')
@@ -319,6 +350,9 @@ def unificar_dian_vs_cont(df_auditoria, df_aud_comp, df_res_auditoria, df_autorr
     df['Sort_Matched_Tipo'] = np.where(completa, df['Prefix_Doc_Group'], '')
     df['Sort_Matched_Emisor'] = np.where(completa, df['Nombre_Emisor_Group'], '')
     df['Sort_Unmatched_Detalle'] = np.where(~completa, df['Novedad'], '')
+    # Personales: la factura DIAN y su registro contable (si existe) quedan juntos en el mismo bloque
+    personal = df['Novedad'].astype(str).str.startswith((NOVEDAD_PERSONAL_DIAN, NOVEDAD_PERSONAL_CONT))
+    df.loc[personal, 'Sort_Unmatched_Detalle'] = NOVEDAD_PERSONAL_DIAN
     df = df.sort_values(by=['Es_Incompleta', 'Sort_Matched_Tipo', 'Sort_Matched_Emisor', 'Sort_Unmatched_Detalle',
                             'Nombre_Emisor_Group', 'Num.Ext_Clean', 'Prioridad_Fila'])
 

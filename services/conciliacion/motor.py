@@ -8,6 +8,7 @@ from data import parametros_repo
 from data.autorretenedores_repo import GestorAutorretenedores
 from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_vacias
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
+from shared.hojas import resolver_hojas
 from shared.totales import quitar_fila_totales
 from services.conciliacion import preparacion as prep
 from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
@@ -22,7 +23,7 @@ class ConciliadorAuditoria(Reportador):
                  seriales_base_dc=None, seriales_base2_dc=None, filtro_grupo="Ambos", progress_callback=None,
                  seriales_reteiva=None, perfil=None):
         self.file_path = Path(file_path)
-        self.sheet_names = sheet_names
+        self.sheet_names = dict(sheet_names)
         self.progress_callback = progress_callback
         self.seriales_iva = seriales_iva or []
         self.seriales_base = seriales_base or []
@@ -42,6 +43,10 @@ class ConciliadorAuditoria(Reportador):
             hojas = hojas_de(self.file_path)
         except Exception as e:
             raise ErrorSistema(f"No se pudo abrir el archivo Excel: {e}") from e
+        self._reportar("Ubicando las hojas Token, Contabilidad y Terceros en el libro...")
+        self.sheet_names, mensajes = resolver_hojas(self.file_path, self.sheet_names)
+        for mensaje in mensajes:
+            self._reportar(mensaje)
         for clave in ('principal', 'aud_comp'):
             nombre = self.sheet_names.get(clave)
             if not nombre:
@@ -72,15 +77,16 @@ class ConciliadorAuditoria(Reportador):
         return bool(vacias.any(axis=None))
 
     def _asegurar_token_formateado(self):
-        """Siempre recalcula el Token con la Contabilidad/Terceros actuales (re-procesos de auditorías pasadas);
-        la hoja solo se reescribe si cambió algo o si nunca se formateó."""
+        """Formatea SIEMPRE el Token con la Contabilidad/Terceros actuales, también en re-procesos de auditorías ya
+        hechas: nunca se reutilizan CONCEPTO, TERCERO, BASE ni Num.Ext de una ejecución anterior."""
         if self._token_requiere_formato(self._cargar_token()):
             self._reportar("El Token no está formateado: ejecutando 'Formatear token' automáticamente...")
         else:
-            self._reportar("Verificando que el Token esté al día con Contabilidad y Terceros...")
+            self._reportar("Reformateando el Token con los datos actuales de Contabilidad y Terceros...")
         FormateadorToken(
             self.file_path, {k: self.sheet_names.get(k) for k in TOKEN_SHEETS}, progress_callback=self.progress_callback,
-        ).ejecutar(solo_si_cambia=True)
+            hojas_resueltas=True,
+        ).ejecutar()
 
     def _cargar_auditoria(self, nombre):
         return prep.limpiar_hoja_auditoria(

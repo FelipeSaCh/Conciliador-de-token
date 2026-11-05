@@ -39,3 +39,13 @@ def quitar_filas_vacias(df, columnas):
 
 def contiene(serie, texto):
     return serie.astype(str).str.contains(texto, case=False, na=False)
+
+
+def es_personal(df):
+    """Gasto personal: CONCEPTO (TIPO + DETALLE de Contabilidad) o TIPO contienen 'PERSONAL'. Misma regla en el
+    formateo del Token, la conciliación y el informe de IVA."""
+    marca = pd.Series(False, index=df.index)
+    for col in ('CONCEPTO', 'TIPO'):
+        if col in df.columns:
+            marca |= df[col].fillna('').astype(str).str.upper().str.contains('PERSONAL', regex=False)
+    return marca

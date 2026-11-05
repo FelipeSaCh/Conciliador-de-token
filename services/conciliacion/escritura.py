@@ -27,6 +27,7 @@ COLUMNAS_INYECTADAS = [
     ('ALERTA', 'alerta', ALERTA_FILL_COLOR, None),
 ]
 NOMBRES_INYECTADOS = {n for n, *_ in COLUMNAS_INYECTADAS}  # incluye las desactivadas, para limpiar ejecuciones previas
+NOMBRES_EXCLUSIVOS = NOMBRES_INYECTADOS - {'BASE', 'IVA'}
 if not PERFIL_TRIBUTARIO_ACTIVO:
     COLUMNAS_INYECTADAS = [c for c in COLUMNAS_INYECTADAS if c[0] != 'RETEIVA']
 
@@ -143,16 +144,19 @@ def inyectar_columnas(wb, nombre_hoja, df_res, dict_auto):
     encabezado = lambda c: str(ws.cell(row=header_row, column=c).value).strip().upper()
     quitar_filas_totales_ws(ws, header_row)
 
-    # Limpia columnas inyectadas en una ejecución previa
+    # Re-proceso: se eliminan TODAS las columnas inyectadas en ejecuciones previas y se vuelven a generar. Las de nombre
+    # exclusivo del programa se quitan donde estén (aunque el usuario las haya movido); BASE e IVA solo si están en el
+    # bloque contiguo después de DETALLE (la hoja original podría tener columnas con ese nombre).
     col_detalle = next((c for c in range(1, ws.max_column + 1) if encabezado(c) == 'DETALLE'), 0)
+    a_borrar = set()
     if col_detalle:
-        previas = 0
-        for i in range(1, len(NOMBRES_INYECTADOS) + 1):
-            if encabezado(col_detalle + i) not in NOMBRES_INYECTADOS:
-                break
-            previas += 1
-        if previas:
-            ws.delete_cols(col_detalle + 1, amount=previas)
+        c = col_detalle + 1
+        while c <= ws.max_column and encabezado(c) in NOMBRES_INYECTADOS:
+            a_borrar.add(c)
+            c += 1
+    a_borrar |= {c for c in range(1, ws.max_column + 1) if encabezado(c) in NOMBRES_EXCLUSIVOS}
+    for c in sorted(a_borrar, reverse=True):
+        ws.delete_cols(c)
 
     col_tercero = col_nit = col_tipo = 0
     for c in range(1, ws.max_column + 1):

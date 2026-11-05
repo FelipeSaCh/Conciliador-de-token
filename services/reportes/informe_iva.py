@@ -7,7 +7,7 @@ from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from core.errors import ErrorSistema, ErrorUsuario, Reportador, logger
-from shared.dataframes import a_numero, buscar_columna
+from shared.dataframes import a_numero, buscar_columna, es_personal
 from shared.texto import MESES_ES, nombre_archivo_seguro, normalizar_ascii
 from shared.excel_io import guardar_libro_openpyxl
 from shared.totales import quitar_fila_totales
@@ -84,8 +84,8 @@ class GeneradorInformeIVA(Reportador):
         filtro = df[COLUMNA_TIPO_DOC].isin(tipos_incluidos) & df[COLUMNA_GRUPO].isin(GRUPOS_VALIDOS)
 
         # IVA de gastos personales no es descontable: se excluye solo en Recibidos
-        if "CONCEPTO" in df.columns:
-            excluir = (df[COLUMNA_GRUPO] == "Recibido") & df["CONCEPTO"].astype(str).str.strip().str.upper().str.contains("PERSONAL", na=False)
+        if "CONCEPTO" in df.columns or "TIPO" in df.columns:
+            excluir = (df[COLUMNA_GRUPO] == "Recibido") & es_personal(df)
             filtro &= ~excluir
             if excluir.sum() > 0:
                 self._reportar(f"Se ignoraron {excluir.sum()} registro(s) de 'Recibido' por tener conceptos personales.")
