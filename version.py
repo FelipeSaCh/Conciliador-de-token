@@ -1,3 +1,3 @@
 """Módulo para almacenar el número de versión global del programa."""
 
-__version__ = "2.3.6"
+__version__ = "2.3.7"

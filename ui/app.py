@@ -18,7 +18,7 @@ from ui.theme import PALETTE, aplicar_icono, configurar_estilos, fuente, fuente_
 from ui.widgets import PaginaDesplazable, boton_secundario
 from ui.worker import EjecutorSegundoPlano
 
-# URL_GUIA_AUDITOR = "https://..."  # TODO: enlace a la Guía del auditor
+URL_GUIA_AUDITOR = "https://drive.google.com/file/d/1v3588agUQlwzUIutPHNuvzRCChFl1pRb/view?usp=sharing"  # TODO: enlace a la Guía del auditor
 
 # (sección, [(id, texto del menú, clase de página o URL a abrir)]) en el orden del menú lateral
 NAVEGACION = [
@@ -35,9 +35,9 @@ NAVEGACION = [
         ("preview", "Vista previa", PreviewPage),
         ("autorretenedores", "Autorretenedores", AutorretenedoresPage),
     ]),
-    # ("Ayuda", [
-    #     ("guia", "Guía del auditor", URL_GUIA_AUDITOR),
-    # ]),
+    ("Ayuda", [
+         ("guia", "Guía del auditor", URL_GUIA_AUDITOR),
+    ]),
 ]
 PAGINA_INICIAL = "config"
 
