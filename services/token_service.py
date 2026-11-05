@@ -49,7 +49,31 @@ class FormateadorToken(Reportador):
             logger.warning(f"Error al procesar hoja de {clave} '{nombre}': {e}")
             return pd.DataFrame(columns=self.COLUMNAS_REQUERIDAS_NIT)
 
-    def ejecutar(self):
+    @staticmethod
+    def _normalizar_valores(serie):
+        return sorted(limpiar_codigo(serie.astype(object).where(serie.notna(), '')).str.upper().tolist())
+
+    @classmethod
+    def _sin_cambios(cls, df_actual, df_nuevo, tenia_totales):
+        """True si la hoja ya tiene las columnas calculadas con los mismos valores (y su fila de totales)."""
+        if not tenia_totales or len(df_actual) != len(df_nuevo):
+            return False
+        for col in COLUMNAS_CALCULADAS:
+            if col not in df_actual.columns or col not in df_nuevo.columns:
+                return False
+            actual, nuevo = df_actual[col], df_nuevo[col]
+            if col == 'BASE':
+                a = pd.to_numeric(actual, errors='coerce').fillna(0).round(2).sort_values().tolist()
+                n = pd.to_numeric(nuevo, errors='coerce').fillna(0).round(2).sort_values().tolist()
+                if a != n:
+                    return False
+            elif cls._normalizar_valores(actual) != cls._normalizar_valores(nuevo):
+                return False
+        return True
+
+    def ejecutar(self, solo_si_cambia=False):
+        """Formatea el Token. solo_si_cambia=True (conciliación) recalcula siempre CONCEPTO, TERCERO, TIPO, BASE y
+        Num.Ext con la Contabilidad/Terceros actuales y solo reescribe la hoja si algún valor cambió."""
         if not self.file_path.exists():
             raise ErrorUsuario(f"El archivo no existe: {self.file_path}")
         try:
@@ -65,7 +89,9 @@ class FormateadorToken(Reportador):
 
         self._reportar("Cargando hoja principal (Token)...")
         try:
-            df_principal = quitar_fila_totales(limpiar_encabezados(pd.read_excel(self.file_path, sheet_name=nombre_principal)))
+            df_leido = limpiar_encabezados(pd.read_excel(self.file_path, sheet_name=nombre_principal))
+            df_principal = quitar_fila_totales(df_leido)
+            tenia_totales = len(df_principal) < len(df_leido)
             df_principal = df_principal.dropna(how="all").reset_index(drop=True)
             self._validar_columnas(df_principal, self.COLUMNAS_REQUERIDAS_PRINCIPAL, nombre_principal)
         except Exception as e:
@@ -87,6 +113,11 @@ class FormateadorToken(Reportador):
         df_export = self._ordenar_jerarquico(df_export)
         es_personales_ordenado = df_export.pop("_ES_PERSONAL")
 
+        if solo_si_cambia and self._sin_cambios(df_principal, df_export, tenia_totales):
+            self._reportar("Token al día: concepto, tercero, base y Num.Ext no cambiaron.")
+            return {"filas_procesadas": len(df_export), "filas_personales": int(es_personales_ordenado.sum()),
+                    "escrito": False}
+
         self._reportar("Escribiendo hoja Token formateada...")
         self._escribir_excel(nombre_principal, df_export, es_personales_ordenado)
 
@@ -94,6 +125,7 @@ class FormateadorToken(Reportador):
         return {
             "filas_procesadas": len(df_export),
             "filas_personales": int(es_personales_ordenado.sum()),
+            "escrito": True,
         }
 
     @staticmethod

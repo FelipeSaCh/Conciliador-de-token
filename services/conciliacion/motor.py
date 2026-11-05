@@ -10,7 +10,7 @@ from shared.dataframes import buscar_columna, limpiar_encabezados, quitar_filas_
 from shared.excel_io import cargar_hoja_encabezado_variable, hojas_de
 from shared.totales import quitar_fila_totales
 from services.conciliacion import preparacion as prep
-from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores, resumen_tratamientos
+from services.conciliacion.alertas import alertas_retencion, diccionario_autorretenedores
 from services.conciliacion.emparejamiento import unificar_dian_vs_cont
 from services.conciliacion.escritura import escribir_resultados
 from services.token_service import COLUMNAS_CALCULADAS, FormateadorToken
@@ -72,12 +72,15 @@ class ConciliadorAuditoria(Reportador):
         return bool(vacias.any(axis=None))
 
     def _asegurar_token_formateado(self):
-        if not self._token_requiere_formato(self._cargar_token()):
-            return
-        self._reportar("El Token no está formateado: ejecutando 'Formatear token' automáticamente...")
+        """Siempre recalcula el Token con la Contabilidad/Terceros actuales (re-procesos de auditorías pasadas);
+        la hoja solo se reescribe si cambió algo o si nunca se formateó."""
+        if self._token_requiere_formato(self._cargar_token()):
+            self._reportar("El Token no está formateado: ejecutando 'Formatear token' automáticamente...")
+        else:
+            self._reportar("Verificando que el Token esté al día con Contabilidad y Terceros...")
         FormateadorToken(
             self.file_path, {k: self.sheet_names.get(k) for k in TOKEN_SHEETS}, progress_callback=self.progress_callback,
-        ).ejecutar()
+        ).ejecutar(solo_si_cambia=True)
 
     def _cargar_auditoria(self, nombre):
         return prep.limpiar_hoja_auditoria(
@@ -108,12 +111,9 @@ class ConciliadorAuditoria(Reportador):
         valor_uvt = f"{parametros['uvt'][anio]:,.0f}".replace(",", ".")
         self._reportar(f"  UVT {anio}: ${valor_uvt} | Vigencia desde {desde}: "
                        + ", ".join(f"{c} {v:g}" for c, v in bases.items()) + " UVT")
-        dict_auto = diccionario_autorretenedores(df_autorretenedores)
-        for linea in resumen_tratamientos(dict_auto):
-            self._reportar(linea)
         res = alertas_retencion(
             df_aud_comp, self.seriales_base, self.seriales_iva, self.seriales_ret, self.seriales_reteiva,
-            dict_auto, self.perfil,
+            diccionario_autorretenedores(df_autorretenedores), self.perfil,
         )
         df_res_auditoria[res.columns] = res
 

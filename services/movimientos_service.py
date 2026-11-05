@@ -568,7 +568,10 @@ class TransformadorMovimientos(Reportador):
                 if isinstance(v, (bool, np.bool_)):
                     return f'<c r="{ref}" s="{s_txt}" t="b"><v>{int(v)}</v></c>'
                 if isinstance(v, (int, float, np.integer, np.floating)):
-                    return f'<c r="{ref}" s="{s_txt}"><v>{float(v)!r}</v></c>' if np.isfinite(v) else f'<c r="{ref}" s="{s_txt}"/>'
+                    if not np.isfinite(v):
+                        return f'<c r="{ref}" s="{s_txt}"/>'
+                    numero = int(v) if float(v).is_integer() else float(v)  # NIT/número sin ".0"
+                    return f'<c r="{ref}" s="{s_txt}"><v>{numero!r}</v></c>'
                 if isinstance(v, (pd.Timestamp,)) or hasattr(v, "year") and hasattr(v, "month"):
                     serial = (pd.Timestamp(v) - base) / pd.Timedelta(days=1)
                     return f'<c r="{ref}" s="{s_fecha}"><v>{float(serial)!r}</v></c>'

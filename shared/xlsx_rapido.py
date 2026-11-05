@@ -141,7 +141,19 @@ class LibroXlsx:
             self._omitir.add(f"{carpeta}/_rels/{archivo}.rels")
 
         self._omitir.add(parte)
+        self._quitar_calc_chain()
         self._hoja = (parte, partes)
+
+    def _quitar_calc_chain(self):
+        """La cadena de cálculo de Excel apunta a celdas con fórmula de la hoja reemplazada; si queda desactualizada,
+        Excel abre el libro con «reparar» y puede descartar contenido. Se elimina (Excel la regenera)."""
+        if "xl/calcChain.xml" not in self._nombres:
+            return
+        self._omitir.add("xl/calcChain.xml")
+        rels_nombre = "xl/_rels/workbook.xml.rels"
+        rels = re.sub(r"<(?:\w+:)?Relationship\b[^>]*calcChain[^>]*/>", "", self._leer(rels_nombre))
+        tipos = re.sub(r"<Override\b[^>]*calcChain[^>]*/>", "", self._leer("[Content_Types].xml"))
+        self._mod.update({rels_nombre: rels.encode(), "[Content_Types].xml": tipos.encode()})
 
     def _guardar(self) -> None:
         self._mod["xl/styles.xml"] = self._estilos.encode()
